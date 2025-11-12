@@ -1,0 +1,294 @@
+/* Desktop Styles (769px and above) */
+@media (min-width: 769px) {
+    /* Hide mobile header on desktop */
+    .mobile-header-top {
+        display: none;
+    }
+    
+    .mobile-header {
+        display: none;
+    }
+
+    /* Desktop Header Top Row */
+    .header-top {
+        background: linear-gradient(90deg, #0d1b2a 0%, #1a2f3f 100%);
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(255, 216, 20, 0.15);
+    }
+
+    .header-top-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+    }
+
+    .header-top-left,
+    .header-top-center,
+    .header-top-right {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+
+    .header-top-center {
+        flex: 1;
+        justify-content: center;
+    }
+
+    .top-logo-link {
+        display: flex;
+        align-items: center;
+    }
+
+    .top-logo {
+        height: 55px;
+        width: 120px;
+        object-fit: contain;
+    }
+
+    .site-name {
+        color: #ffd814;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .header-top-right .action-btn {
+        background: rgba(255, 216, 20, 0.1);
+        border: 1px solid rgba(255, 216, 20, 0.3);
+        color: #ffd814;
+        font-size: 16px;
+        cursor: pointer;
+        width: 36px;
+        height: 36px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+    }
+
+    .header-top-right .action-btn:hover {
+        background: rgba(255, 216, 20, 0.25);
+        border-color: #ffd814;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(255, 216, 20, 0.3);
+    }
+
+    /* Desktop Main Header */
+    .desktop-header {
+        background: linear-gradient(135deg, #1a3a52 0%, #0f2740 100%);
+        padding: 12px 0;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .desktop-header-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 20px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+    }
+
+    /* Hamburger Menu Desktop */
+    .desktop-hamburger-menu {
+        background: none;
+        border: none;
+        color: #ffd814;
+        font-size: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+        flex-shrink: 0;
+    }
+
+    .desktop-hamburger-menu:hover {
+        background: rgba(255, 216, 20, 0.1);
+    }
+
+    /* Logo Section Desktop */
+    .desktop-logo {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+    }
+
+    .desktop-logo-img {
+        width: 44px;
+        height: 44px;
+        background: linear-gradient(135deg, #ffd814, #ffb700);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        color: #0f2740;
+        font-size: 20px;
+        box-shadow: 0 2px 8px rgba(255, 216, 20, 0.2);
+    }
+
+    .desktop-brand-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .desktop-brand-name {
+        color: white;
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1;
+    }
+
+    .desktop-brand-tagline {
+        color: #ffd814;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.5px;
+        line-height: 1;
+    }
+
+    /* Desktop Search */
+    .desktop-search {
+        flex: 1;
+        display: flex;
+        align-items: center;
+    }
+
+    .desktop-search-wrapper {
+        width: 100%;
+        max-width: 500px;
+        display: flex;
+        align-items: center;
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .desktop-search-input {
+        flex: 1;
+        border: none;
+        padding: 12px 16px;
+        font-size: 14px;
+        outline: none;
+    }
+
+    .desktop-search-input::placeholder {
+        color: #999;
+    }
+
+    .desktop-search-btn {
+        background: rgba(255, 216, 20, 0.15);
+        border: 1px solid rgba(255, 216, 20, 0.3);
+        border-left: none;
+        color: #ffd814;
+        font-size: 18px;
+        cursor: pointer;
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+    }
+
+    .desktop-search-btn:hover {
+        background: rgba(255, 216, 20, 0.25);
+    }
+
+    /* Desktop Actions */
+    .desktop-actions {
+        display: flex;
+        gap: 12px;
+        flex-shrink: 0;
+    }
+
+    .desktop-action-btn {
+        background: rgba(255, 216, 20, 0.15);
+        border: 1px solid rgba(255, 216, 20, 0.3);
+        color: #ffd814;
+        font-size: 20px;
+        cursor: pointer;
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+        position: relative;
+    }
+
+    .desktop-action-btn:hover {
+        background: rgba(255, 216, 20, 0.25);
+        border-color: #ffd814;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(255, 216, 20, 0.3);
+    }
+
+    .desktop-badge {
+        position: absolute;
+        top: -8px;
+        right: -8px;
+        background: #dc2626;
+        color: white;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 700;
+        border: 2px solid #0f2740;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Desktop Location */
+    .desktop-location {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        background: rgba(255, 216, 20, 0.1);
+        border-radius: 8px;
+        border: 1px solid rgba(255, 216, 20, 0.2);
+    }
+
+    .desktop-location-icon {
+        color: #ffd814;
+        font-size: 18px;
+    }
+
+    .desktop-location-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .desktop-location-label {
+        color: #d0d0d0;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .desktop-location-city {
+        color: #ffd814;
+        font-size: 13px;
+        font-weight: 600;
+    }
+}

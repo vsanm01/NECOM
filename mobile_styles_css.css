@@ -1,0 +1,308 @@
+/* Mobile Styles (Max 768px) */
+@media (max-width: 768px) {
+    /* Hide desktop header on mobile */
+    .header-top {
+        display: none;
+    }
+    
+    .desktop-header {
+        display: none;
+    }
+
+    /* Mobile Header Top Container */
+    .mobile-header-top {
+        background: linear-gradient(90deg, #0d1b2a 0%, #1a2f3f 100%);
+        padding: 12px 0;
+        border-bottom: 1px solid rgba(255, 216, 20, 0.15);
+    }
+
+    .mobile-header-top-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0 12px;
+        gap: 10px;
+    }
+
+    .mobile-top-left,
+    .mobile-top-center,
+    .mobile-top-right {
+        display: flex;
+        align-items: center;
+        flex-shrink: 0;
+    }
+
+    .mobile-top-left {
+        gap: 8px;
+    }
+
+    .mobile-top-center {
+        flex: 1;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .mobile-top-right {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        max-width: 50%;
+        justify-content: flex-end;
+    }
+
+    .top-logo-link {
+        display: flex;
+        align-items: center;
+    }
+
+    .mobile-top-logo {
+        height: 42px;
+        width: auto;
+        max-width: 90px;
+        object-fit: contain;
+    }
+
+    .mobile-site-name {
+        color: #ffd814;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    .mobile-top-right .action-btn {
+        background: rgba(255, 216, 20, 0.1);
+        border: 1px solid rgba(255, 216, 20, 0.2);
+        color: #ffd814;
+        font-size: 11px;
+        cursor: pointer;
+        width: 28px;
+        height: 28px;
+        border-radius: 5px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+        flex-shrink: 0;
+    }
+
+    .mobile-top-right .action-btn:active {
+        background: rgba(255, 216, 20, 0.25);
+        border-color: #ffd814;
+        transform: scale(0.95);
+    }
+
+    /* Main Mobile Header */
+    .mobile-header {
+        background: linear-gradient(135deg, #1a3a52 0%, #0f2740 100%);
+        padding: 0;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Row 1: Menu, Logo, Icons */
+    .header-row-1 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 12px;
+        gap: 8px;
+    }
+
+    .hamburger-menu {
+        background: none;
+        border: none;
+        color: #ffd814;
+        font-size: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+        flex-shrink: 0;
+    }
+
+    .hamburger-menu:active {
+        background: rgba(255, 216, 20, 0.1);
+        transform: scale(0.95);
+    }
+
+    /* Logo Tagline Section */
+    .brand-section {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .brand-logo {
+        width: 36px;
+        height: 36px;
+        background: linear-gradient(135deg, #ffd814, #ffb700);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        color: #0f2740;
+        font-size: 16px;
+        flex-shrink: 0;
+        box-shadow: 0 2px 8px rgba(255, 216, 20, 0.2);
+    }
+
+    .brand-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .brand-name {
+        color: white;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        line-height: 1;
+    }
+
+    .brand-tagline {
+        color: #ffd814;
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.5px;
+        line-height: 1;
+    }
+
+    /* Header Actions */
+    .header-actions {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+
+    .header-actions .action-btn {
+        background: none;
+        border: none;
+        color: #ffd814;
+        font-size: 18px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+        position: relative;
+    }
+
+    .header-actions .action-btn:active {
+        background: rgba(255, 216, 20, 0.1);
+        transform: scale(0.95);
+    }
+
+    /* Cart Badge */
+    .badge {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        background: #dc2626;
+        color: white;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 700;
+        border: 2px solid #1a3a52;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Row 2: Search Bar */
+    .header-row-2 {
+        padding: 10px 12px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, transparent 100%);
+    }
+
+    .search-wrapper {
+        display: flex;
+        align-items: center;
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+
+    .search-wrapper:focus-within {
+        box-shadow: 0 4px 16px rgba(255, 216, 20, 0.2);
+    }
+
+    .search-input {
+        flex: 1;
+        border: none;
+        padding: 10px 12px;
+        font-size: 13px;
+        outline: none;
+        background: transparent;
+        color: #1a1a1a;
+    }
+
+    .search-input::placeholder {
+        color: #999;
+    }
+
+    .search-btn {
+        background: rgba(255, 216, 20, 0.15);
+        border: 1px solid rgba(255, 216, 20, 0.3);
+        color: #ffd814;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 10px 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+        border-radius: 0;
+    }
+
+    .search-btn:active {
+        background: rgba(255, 216, 20, 0.25);
+        transform: scale(0.95);
+    }
+
+    /* Row 3: Location */
+    .header-row-3 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: rgba(0, 0, 0, 0.2);
+        border-top: 1px solid rgba(255, 216, 20, 0.1);
+    }
+
+    .location-icon {
+        color: #ffd814;
+        font-size: 16px;
+        flex-shrink: 0;
+    }
+
+    .location-text {
+        color: #d0d0d0;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.3px;
+    }
+
+    .location-city {
+        color: #ffd814;
+        font-weight: 600;
+    }
+}

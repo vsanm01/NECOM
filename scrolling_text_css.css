@@ -1,0 +1,66 @@
+/* Scrolling Text Styles */
+.scrolling-text-container {
+    background: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
+    overflow: hidden;
+    padding: 10px 0;
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    border-bottom: 2px solid #991b1b;
+}
+
+.scrolling-text-wrapper {
+    display: flex;
+    white-space: nowrap;
+    animation: scroll 30s linear infinite;
+}
+
+.scrolling-text {
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 0 50px;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.scrolling-text i {
+    color: #ffd814;
+}
+
+@keyframes scroll {
+    0% {
+        transform: translateX(0);
+    }
+    100% {
+        transform: translateX(-50%);
+    }
+}
+
+.scrolling-text-2 {
+    background: linear-gradient(90deg, #059669 0%, #10b981 100%);
+    overflow: hidden;
+    padding: 8px 0;
+    border-bottom: 2px solid #047857;
+}
+
+.scrolling-text-wrapper-2 {
+    display: flex;
+    white-space: nowrap;
+    animation: scroll 25s linear infinite;
+}
+
+.scrolling-text-content-2 {
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 50px;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.scrolling-text-content-2 i {
+    color: #ffd814;
+}
