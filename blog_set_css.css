@@ -1,0 +1,26 @@
+/* ===== HIDE BLOGGER'S BUILT-IN UI ELEMENTS =====
+   Hides Blogger's own default widgets/chrome (pager, attribution,
+   feed links, etc.) so a custom theme can take over the page.
+   NOTE: the original Blogger hide-list also included ".navbar"
+   (Blogger's own injected nav bar). If your site has its own custom
+   ".navbar" for site navigation, add that selector back in only if
+   you actually want Blogger's nav (not yours) hidden — otherwise it
+   will hide your real site navigation too. Only "#navbar" (the ID
+   Blogger's own bar uses) is included below to stay safe by default. ===== */
+
+.post-footer,
+.post-author,
+.post-timestamp,
+.comment-link,
+.post-labels,
+.post-share-buttons,
+.jump-link,
+.blog-pager,
+#blog-pager,
+#navbar,
+.feed-links,
+.subscribe-section,
+#Attribution1,
+.post-feeds {
+  display: none !important;
+}
