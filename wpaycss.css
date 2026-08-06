@@ -1,0 +1,734 @@
+  :root {
+    --navy: #1a2744;
+    --navy-deep: var(--navy);       /* FIX: was a duplicate hex literal — single source of truth now */
+    --yellow: #ffd400;
+    --ink: #eef2f7;                  /* light text — only for use ON the navy background */
+    --text-default: #33415c;         /* FIX: safe default body-text color */
+    --muted: #ffffff;                /* CHANGE: white, per request (was #b0b8cc grey) */
+    --font-primary: 'DM Sans', Arial, Helvetica, sans-serif;
+    --font-display: 'Playfair Display', serif;
+    --wags-logo: url('https://drive.google.com/thumbnail?id=1sSm9wI0PhW_exytdqf87l057cuyThnhu&sz=s400');
+
+    /* ===== Dark theme + donation-panel tokens — matches wags_pay_16.html ===== */
+    --dark: #0f1623;
+    --dark2: #1a2336;
+    --gold: #ffd400;
+    --gold2: #ffb700;
+    --text-light: #e8eaf0;
+    --text-muted: #8a9ab8;
+    --radius: 14px;
+    --radius-sm: 10px;
+    /* donation widget vars (required by donation-panel1.js) */
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --surface2: #f9f9f9;
+    --border: #e0e0e0;
+    --border-active: #ffd400;
+    --accent: #ffd400;
+    --accent2: #ffb700;
+    --text: #1a1a1a;
+    --text2: #666666;
+    --text3: #aaaaaa;
+    --success: #16a34a;
+    --error: #dc2626;
+    --locked: #f7f7f7;
+    --locked-text: #cccccc;
+
+    /* FIX: dedicated token for the modal close icon.
+       --muted is now #ffffff (white) for use on dark navy backgrounds;
+       the close button sits on a WHITE modal, so reusing --muted made it invisible. */
+    --modal-close-icon: #9a9a9a;
+
+    /* Tokenized ticker colors (previously hardcoded, out of step with the rest of the palette) */
+    --ticker-bg: #e5383b;
+    --ticker-text: #ffffff;
+  }
+
+  :root { color-scheme: dark; }
+
+  * { box-sizing: border-box; }
+
+  /* Skip link for keyboard / screen-reader users */
+  .skip-link {
+    position: absolute;
+    left: -999px;
+    top: auto;
+    background: #000;
+    color: #fff;
+    padding: 8px 16px;
+    z-index: 1000;
+  }
+  .skip-link:focus {
+    left: 8px;
+    top: 8px;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-primary);
+    background: var(--dark);        /* CHANGE: dark theme, matches wags_pay_16.html */
+    color: var(--text-light);       /* CHANGE: light text for dark background */
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header */
+  .site-main-header {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background: var(--navy);
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .header-brand-wrap {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  /* ===== TICKER (matches wags_pay(15).html) ===== */
+  .ticker-bar {
+    background: var(--ticker-bg);
+    border-top: 1px solid var(--yellow);
+    border-bottom: 1px solid var(--yellow);
+    overflow: hidden;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .ticker-track {
+    display: flex;
+    white-space: nowrap;
+    gap: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .ticker-track { animation: ticker 50s linear infinite; }
+    .ticker-track:hover { animation-play-state: paused; }
+  }
+  .ticker-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 32px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ticker-text);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ticker-sep {
+    color: rgba(255,255,255,0.55);
+    font-size: 16px;
+    line-height: 1;
+  }
+  @keyframes ticker {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+  /* FIX: JS toggles this class on prefers-reduced-motion, but the rule didn't exist yet —
+     reduced-motion users were still getting the full marquee animation. */
+  .ticker-track.ticker-paused {
+    animation-play-state: paused;
+  }
+
+  .logo-box {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    background-image: var(--wags-logo);
+    background-size: cover;
+    background-position: center;
+  }
+
+  .brand-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .brand-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .badge {
+    background: var(--yellow);
+    color: var(--navy-deep);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    padding: 3px 10px;
+    border-radius: 6px;
+  }
+
+  .studio-word {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+
+  .tagline {
+    font-size: 12.5px;
+    color: var(--muted);
+    font-weight: 400;
+    letter-spacing: 0.01em;
+  }
+
+  /* Header nav — matches wags_pay(15).html: white text, yellow on hover */
+  .site-main-header-links {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .site-main-header-link {
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .site-main-header-link:hover,
+  .site-main-header-link:focus-visible {
+    color: var(--yellow);
+    background: rgba(255,255,255,0.06);
+    outline: none;
+  }
+
+  .site-main-header-donate-btn {
+    background: var(--yellow);
+    color: var(--navy-deep);
+    border: none;
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-family: var(--font-primary);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: 8px;
+  }
+  .site-main-header-donate-btn:hover,
+  .site-main-header-donate-btn:focus-visible {
+    background: #ffb700;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(255,212,0,0.3);
+  }
+
+  /* Main content */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr minmax(360px, 520px);
+    gap: 0;
+    min-height: 0;
+    padding: 60px 48px 60px 56px;
+  }
+
+  .hero {
+    max-width: 560px;
+    text-align: left;
+    align-self: center;
+  }
+
+  .hero-badges-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid rgba(255,212,0,0.3);
+    color: var(--gold);
+    background: rgba(255,212,0,0.07);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 5px 14px;
+    border-radius: 100px;
+    width: fit-content;
+  }
+
+  .hero h1 {
+    font-family: var(--font-display);
+    font-size: clamp(28px, 4vw, 40px);
+    font-weight: 700;
+    color: #ffffff;
+    margin: 0 0 20px;
+    letter-spacing: -0.5px;
+  }
+
+  .hero h1 span {
+    color: var(--gold);
+  }
+
+  .hero-pill {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin: 0 0 12px;
+    line-height: 1.6;
+  }
+  .hero-pill.yellow {
+    background: var(--gold);
+    color: var(--navy-deep);
+  }
+  .hero-pill.blue {
+    background: #29a8e0;
+    color: #ffffff;
+  }
+  .hero-pill.green {
+    background: #1fae62;
+    color: #ffffff;
+  }
+
+  .hero p {
+    color: var(--text-muted);
+    font-size: 15.5px;
+    line-height: 1.6;
+    margin: 24px 0 12px;
+  }
+  .hero p:last-child { margin-bottom: 0; }
+
+  .hero-highlight-1 {
+    color: #7dd3fc;
+    font-weight: 600;
+  }
+
+  .hero-highlight-2 {
+    color: var(--gold);
+    font-weight: 700;
+  }
+
+  .donation-panel-error {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+    margin: 60px 0 0;
+    padding: 16px 20px;
+    background: rgba(220,38,38,0.1);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
+    color: var(--text-light);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: left;
+  }
+  .donation-panel-error a { color: var(--gold); font-weight: 600; }
+
+  /* Footer */
+  .site-footer {
+    background: var(--navy);
+    padding: 10px 32px;              /* CHANGE: reduced from 16px to shrink footer height */
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;   /* CHANGE: spacer moved right after brand so the rest groups on the right */
+    align-items: center;
+    gap: 16px;
+  }
+
+  .footer-disclaimer {
+    grid-column: 1 / -1;             /* spans full footer width, sits in its own row above the rest */
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 12px;
+    padding: 10px 18px;
+    margin-bottom: 4px;
+  }
+  .footer-disclaimer-title {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+  .footer-disclaimer-text {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .footer-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    grid-column: 1;
+  }
+
+  .footer-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .footer-text .studio-word {
+    font-size: 14px;
+  }
+
+  .copyright {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* Powered by badge - matches PBW reference exactly */
+  .ft-powered-wrap {
+    grid-column: 3;
+    justify-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ft-powered-label {
+    font-size: 11px;
+    color: var(--muted);            /* FIX: was hardcoded #b0b8cc, now uses the design token (white) */
+    font-style: italic;
+  }
+  .ft-powered-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: var(--yellow);      /* FIX: was hardcoded #ffd400 */
+    color: var(--navy-deep);        /* FIX: was hardcoded #1a2744 */
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px 1px 3px;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .ft-powered-badge:hover,
+  .ft-powered-badge:focus-visible { background: #ffb700; }
+  .ft-powered-badge img {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    object-fit: cover;
+    display: block;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ft-powered-badge { transition: none; }
+  }
+
+  /* Footer link row — Legal / Privacy Notice / FAQ / Trouble donating? / Other ways to give */
+  .footer-links {
+    grid-column: 4;
+    justify-self: start;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .footer-links a.footer-link {
+    text-decoration: none;           /* FIX: browsers underline <a> by default regardless of .copyright color */
+    white-space: nowrap;
+    transition: color 0.2s;
+  }
+  .footer-links a.footer-link:hover,
+  .footer-links a.footer-link:focus-visible {
+    color: var(--yellow);            /* FIX: rule now actually exists in the stylesheet */
+  }
+
+  .footer-tagline-block {
+    grid-column: 5;                  /* CHANGE: moved right one more track since spacer now sits in column 2 */
+    justify-self: end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+
+  .footer-tagline {
+    color: var(--yellow);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  /* DMCA Protected badge — sits inside .footer-tagline-block, below .footer-tagline.
+     Replaces the old .footer-subtagline (used for "Our contribution makes a
+     difference", removed from the footer markup in v1.5.8). Deliberately does NOT
+     redeclare .footer-tagline-block itself — that rule already provides the flex
+     column + right-alignment (grid-column: 5, justify-self: end, align-items: flex-end)
+     this badge needs; a second .footer-tagline-block rule would win the cascade on
+     shared properties and silently re-center/re-space it. */
+  .ft-dmca {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  .ft-dmca-label {
+    background: var(--yellow);
+    color: var(--navy-deep);
+    padding: 1px 6px;
+    border-radius: 4px 0 0 4px;
+  }
+
+  .ft-dmca-text {
+    background: var(--navy-deep);
+    color: var(--muted);
+    padding: 1px 6px 1px 4px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  .ft-dmca:hover .ft-dmca-label,
+  .ft-dmca:focus-visible .ft-dmca-label {
+    background: #ffb700;
+  }
+
+  @media (max-width: 560px) {
+    .site-main-header {
+      padding: 14px 18px;
+    }
+    .site-footer {
+      grid-template-columns: 1fr;
+      justify-items: center;
+      text-align: center;
+      padding: 16px 18px;
+    }
+    .footer-disclaimer {
+      order: 0;
+    }
+    .footer-brand {
+      grid-column: 1;
+      flex-direction: column;
+      order: 1;
+    }
+    .footer-links {
+      grid-column: 1;
+      justify-content: center;
+      justify-self: center;
+      margin: 4px 0;
+      order: 2;
+    }
+    .footer-tagline-block {
+      grid-column: 1;
+      justify-self: center;
+      align-items: center;
+      order: 3;
+    }
+    .ft-powered-wrap {
+      grid-column: 1;
+      order: 4;             /* CHANGE: moved after tagline to match okfooter.png */
+      margin-top: 4px;
+    }
+  }
+
+  /* ===== More Ways > / QR Pay / Social modal ===== */
+  .wags-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15,22,35,0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 24px;
+  }
+  .wags-modal {
+    position: relative;
+    background: #ffffff;
+    color: var(--text-default);
+    border-radius: 14px;
+    padding: 28px 24px 24px;
+    max-width: 360px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .wags-modal-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--navy-deep);
+    margin-bottom: 14px;
+  }
+  .wags-modal-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    background: none;
+    border: none;
+    font-size: 20px;
+    line-height: 1;
+    color: var(--modal-close-icon);
+    cursor: pointer;
+    padding: 4px;
+  }
+  .wags-modal-close:hover,
+  .wags-modal-close:focus-visible { color: var(--navy-deep); }
+  .wags-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .wags-modal-link {
+    display: block;
+    padding: 10px 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    color: var(--navy-deep);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .wags-modal-link:hover,
+  .wags-modal-link:focus-visible {
+    border-color: var(--yellow);
+    background: rgba(255,212,0,0.08);
+    outline: none;
+  }
+
+  /* FIX: referenced by a code comment in the QR-pay modal JS but never defined —
+     the QR image would have rendered at native (potentially huge/unbounded) size. */
+  .wags-modal-qr-img {
+    display: block;
+    width: 100%;
+    max-width: 220px;
+    margin: 0 auto;
+    border-radius: 8px;
+  }
+
+  /* FIX: referenced by a code comment on the <noscript> donation fallback but never defined. */
+  .noscript-donation-note {
+    padding: 16px 20px;
+    color: var(--text-light);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .noscript-donation-link {
+    color: var(--gold);
+    font-weight: 600;
+  }
+
+  /* FIX: no-JS fallback for the Social / More Ways / QR Pay controls, which are plain
+     <span role="button"> elements that only work once JS binds their click handlers. */
+  .noscript-nav-links {
+    background: var(--dark2);
+    padding: 8px 32px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 12.5px;
+  }
+  .noscript-nav-links a {
+    color: var(--text-light);
+    text-decoration: underline;
+  }
+  .noscript-nav-links a:hover { color: var(--gold); }
+
+  .hidden-required-section { display: none; }
+
+  .donation-panel-loading {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-light);
+    font-size: 13px;
+    opacity: 0.7;
+  }
+
+  /* ===== HAMBURGER / MOBILE NAV — matches wags_pay_16.html ===== */
+  .header-mobile-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;               /* FIX: was undefined, causing Donate button and hamburger to overlap on mobile */
+  }
+  .mobile-donate-btn { display: none; }
+  .hamburger-btn {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 8px;
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .hamburger-btn span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: var(--gold);
+    border-radius: 2px;
+    transition: all 0.25s;
+  }
+  .mobile-nav {
+    display: none;
+    flex-direction: column;
+    background: var(--dark2);
+    border-bottom: 1px solid rgba(255,212,0,0.1);
+    padding: 8px 20px 16px;
+    gap: 4px;
+  }
+  .mobile-nav.open { display: flex; }
+  .mobile-nav a, .mobile-nav button, .mobile-nav span {
+    display: block;
+    padding: 12px 4px 12px 12px;
+    font-size: 15px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.8);
+    text-decoration: none;
+    border: none;
+    border-left: 4px solid transparent;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    border-bottom: 0.5px solid rgba(255,255,255,0.07);
+    min-height: 48px;
+    box-sizing: border-box;
+    transition: border-left-color 0.15s, background 0.15s;
+  }
+  .mobile-nav a:last-child, .mobile-nav button:last-child, .mobile-nav span:last-child { border-bottom: none; }
+  .mobile-nav button { color: var(--gold); font-family: inherit; }
+  .mobile-nav a:hover, .mobile-nav a:focus-visible,
+  .mobile-nav span:hover, .mobile-nav span:focus-visible,
+  .mobile-nav button:hover, .mobile-nav button:focus-visible {
+    color: var(--gold);
+    border-left-color: var(--gold);
+    background: rgba(255,212,0,0.06);
+    outline: none;
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; padding: 40px 24px; }
+    .hero { text-align: center; }
+    .hero-badges-row { justify-content: center; }
+    .hero-pill { margin: 0 auto 12px; }
+    .donation-panel-error { grid-column: 1; margin: 24px 0 0; }
+    .site-main-header-links { display: none; }
+    .hamburger-btn { display: flex; }
+    .mobile-donate-btn { display: inline-block; }
+  }
