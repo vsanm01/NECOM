@@ -1,0 +1,2085 @@
+/**
+ * unified-modal.js  v2.7.7
+ * ---------------------------------------------------------------
+ * ONE modal engine for every modal in the project — doc viewers,
+ * galleries, confirms, whatever comes next — instead of a
+ * separate self-contained modal file per feature.
+ *
+ * Replaces the duplicated shell logic found independently in
+ * sheet-nav17.js's _DocViewer (style injection,
+ * singleton/stacked overlays, Escape handling, backdrop click,
+ * focus trap, ARIA, brand theming) with ONE implementation. Content
+ * (what's actually rendered inside) is pluggable via a content-type
+ * registry, so doc/gallery/confirm logic stays separate from
+ * shell logic and new modal types don't need to reinvent the shell.
+ *
+ * v2.7.7 CHANGES (over v2.7.6):
+ *   - Fixed: a click inside the Drive iframe (Drive's own pop-out
+ *     button, or anything else in the embed) could still open a new
+ *     window/tab. The v2.7.6 icon-patch was always cosmetic-only —
+ *     it covers the icon visually but was never a real click-through
+ *     block. Removed allow-popups from the iframe's sandbox instead,
+ *     which is an actual functional block: the browser now refuses
+ *     any window.open() from inside the embed, full stop. Trade-off:
+ *     a genuine target="_blank" link inside a PDF/Doc would also be
+ *     blocked now, not just Drive's own button — see the comment
+ *     where the sandbox attribute is set.
+ *
+ * v2.7.6 CHANGES (over v2.7.5):
+ *   - Fixed: v2.7.5's conservative crop stopped clipping real content
+ *     but also stopped reliably hiding Drive's pop-out icon — same
+ *     root problem as v2.7.4, just dialed to the other extreme. The
+ *     underlying issue was using one diagonal zoom+crop for two
+ *     unrelated problems (full-width flowing text bars vs. a small
+ *     fixed-size corner icon). Split them: a gentle width-only
+ *     zoom+crop for the letterbox bars (no vertical change at all,
+ *     so heading lines can't get cropped by it), plus a small
+ *     fixed 46x46px patch over the icon's corner specifically —
+ *     deterministic instead of chasing a small element with a
+ *     percentage-based zoom of the whole frame.
+ *
+ * v2.7.5 CHANGES (over v2.7.4):
+ *   - Fixed: the v2.7.4 crop amounts (width:132%/height:124%,
+ *     margin:-10px 0 0 -16%) were copied verbatim from sheetKit's
+ *     own container/aspect ratio and were far too aggressive in this
+ *     shell — real document text was getting clipped on both edges,
+ *     and the top heading line was getting cropped away entirely
+ *     along with the pop-out icon. Dialed back to a much more
+ *     conservative width:106%/height:106%, margin:-3px 0 0 -3%.
+ *     This trades a fully-hidden pop-out icon (it may now only be
+ *     partially cropped) for not losing real content — if you need
+ *     it fully hidden and can confirm the extra crop won't eat your
+ *     specific document's text, increase these two values; if any
+ *     text is still clipped, decrease them further. There's no way
+ *     to verify the exact right numbers without visually checking
+ *     against your real documents, since Drive's own chrome
+ *     dimensions aren't something this engine can query.
+ *
+ * v2.7.4 CHANGES (over v2.7.3):
+ *   - Replaced the v2.7.3 hideDriveChrome overlay (a covering div
+ *     guessing at the pop-out icon's pixel position — fragile, and
+ *     didn't address Drive's black letterbox bars on text/markdown
+ *     files either) with the technique from sheetKit_v1_1_0.js's
+ *     _DocViewer: ?rm=minimal on the Drive preview URL, plus a
+ *     zoom-and-crop wrapper (iframe scaled up, wrapper clips the
+ *     overflow) that pushes Drive's remaining chrome outside the
+ *     visible viewport entirely. Applies automatically to every
+ *     Drive preview now — the opt-in hideDriveChrome prop is gone.
+ *
+ * v2.7.3 CHANGES (over v2.7.2):
+ *   - Added: "doc" content type accepts props.hideDriveChrome:true —
+ *     an opt-in cosmetic overlay that covers Google Drive's own
+ *     embedded "open in new window" icon (cross-origin content we
+ *     can't otherwise style/remove). Not a security boundary, just
+ *     visual — see the comment above where it's implemented.
+ *
+ * v2.7.2 CHANGES (over v2.7.1):
+ *   - Fixed: the "doc" content type put Drive/Docs share links
+ *     (".../view", ".../edit") straight into the iframe src. Google
+ *     sends X-Frame-Options/CSP on those that refuse to embed — only
+ *     the ".../preview" variant of the same URL is iframe-embeddable.
+ *     Added _toDriveEmbedUrl() to rewrite share links to their
+ *     embeddable form automatically, so callers can paste whatever
+ *     link Drive's "Copy link" button gives them.
+ *
+ * v2.7.1 CHANGES (over v2.7):
+ *   - Fixed: SAFE_PROTOCOLS still allowed viber:/tg: — leftover from
+ *     the removed "socialLinks" content type. No content type in this
+ *     file emits or needs those schemes; trimmed back to
+ *     https:/http:/mailto: to avoid unnecessarily widening what
+ *     doc/markdown/gallery/iconGrid links will accept.
+ *
+ * v2.7 CHANGES (over v2.6) — merges a second, independent v2.6-era
+ * fix pass in with the v2.6 changes below:
+ *   - Fixed: destroy() could fire onClose() ~260ms *after* destroy()
+ *     had already returned, because it force-removes overlays from
+ *     the DOM immediately but close() only ran its teardown on
+ *     transitionend/timeout. close() now accepts an `immediate` flag;
+ *     destroy() uses it to run teardown synchronously.
+ *   - Added: content-type error states (doc/markdown/gallery/
+ *     iconGrid) now render via a shared _showBodyError() helper with
+ *     role="alert", so screen readers announce failures instead of
+ *     silently swapping in text.
+ *   - Added: sandbox + referrerpolicy="no-referrer" on the "doc"
+ *     content type's iframe. _sanitiseURL() only restricts protocol,
+ *     not what an embedded origin can do once loaded — sandboxing
+ *     closes that gap for Drive/Docs/PDF embeds.
+ *   - Added: aria-hidden="true" on the decorative close/expand button
+ *     SVG icons (they're already labelled via the button's aria-label).
+ *   - Added: aria-live="polite" on copy-to-clipboard buttons/labels
+ *     (markdown toolbar + iconGrid copy items) so the copied/failed
+ *     state is announced.
+ *   - Added: UnifiedModal.hasContentType(type) / listContentTypes()
+ *     introspection helpers.
+ *   - Fixed: iconGrid's grid used a fixed column count that could
+ *     overflow on narrow screens with long labels; columns now use
+ *     minmax(0,1fr) and collapse to auto-fit under 400px.
+ *   - Removed: dead `images.length <= 20` check in the gallery dot
+ *     strip — unreachable, since GALLERY_MAX already caps images at 10.
+ *
+ * v2.6 CHANGES (over v2.5) — audit/hardening pass, no new content
+ * types:
+ *   - Fixed: "fullscreen" size and the "expandable" maximize toggle
+ *     were both silently capped at 90vh by the shell's default
+ *     max-height rule. Explicit heights now set an inline max-height
+ *     too, so they're no longer clamped.
+ *   - Fixed: close() could hang forever (modal stuck in the DOM/
+ *     stack) if closed before its open transition ever ran. It now
+ *     has the same transitionend + timeout-fallback pattern notify()
+ *     already used.
+ *   - Fixed: large size presets (lg/xl) could overflow small/mobile
+ *     viewports because the inline width beat the CSS width:90%
+ *     rule. .um-modal now also carries a max-width clamp.
+ *   - Added: body scroll lock while any modal is open (reference
+ *     counted, so stacked modals restore correctly).
+ *   - Added: background content is marked aria-hidden while a modal
+ *     is open (restored on last close) so screen-reader virtual-
+ *     cursor navigation can't wander behind the dialog.
+ *   - Added: aria-label fallback when header:false so the dialog
+ *     always has an accessible name; aria-expanded on the
+ *     maximize toggle; aria-atomic on toasts.
+ *   - Added: toast type icons (info/success/warning/error) so type
+ *     isn't communicated by border color alone.
+ *   - Added: baseline dark-mode (prefers-color-scheme) styling for
+ *     the modal shell and toasts.
+ *   - Added: confirm()/alert() buttons now self-disable on click to
+ *   prevent a slow double-click from firing onConfirm/onCancel twice.
+ *   - Changed: default --um-font is now a system-font stack instead
+ *     of a bare Arial fallback.
+ *   - Changed: the markdown content type's link/image sanitiser
+ *     (_mdSafeUrl) now delegates to the same _sanitiseURL() used by
+ *     doc/gallery/iconGrid instead of duplicating protocol-allowlist
+ *     logic.
+ *   - Removed: all console.warn() diagnostics. Invalid input is now
+ *     handled silently (skipped/ignored) rather than logged — this
+ *     library assumes a production console with no debug output.
+ *
+ * v2.1 CHANGES (over v2.0):
+ *   - New "gallery" content type — multi-image slideshow ported from
+ *     sheet-nav17.js's _DocViewer._renderGallery(): prev/next nav,
+ *     dot strip, click/wheel zoom, touch swipe, keyboard arrows,
+ *     next/prev prefetch. Capped at 10 images (GALLERY_MAX).
+ *     UnifiedModal.open({ content: { type: 'gallery',
+ *       props: { images: [...], captions: [...] } } })
+ *   - New "markdown" content type — ported from sheet-nav17.js's
+ *     _DocViewer._parseMarkdown(), with the same raw/rendered toggle
+ *     and copy-to-clipboard button (async Clipboard API with an
+ *     execCommand('copy') fallback). Accepts props.url (fetched) or
+ *     props.text (rendered immediately, no network call).
+ *     UnifiedModal.open({ content: { type: 'markdown',
+ *       props: { url: '....md' } } })
+ *   - "doc" content type extended to auto-delegate: an array passed
+ *     as props.images/props.gallery routes to "gallery"; a props.url
+ *     ending in .md/.markdown routes to "markdown". Existing single-
+ *     image/PDF/Drive/Docs/Sheets/Slides behavior is unchanged.
+ *
+ * v2.0 CHANGES (over v1.0):
+ *   - confirm()/alert() dialogs + shared button design system
+ *   - escapeHtml() exposed for custom innerHTML-based content types
+ *   - _sanitiseURL() protocol allowlist — "doc" content type now
+ *     validates URLs before use in href/src, closing an XSS gap v1.0
+ *     had (v1.0 passed props.url straight through)
+ *   - notify()/toast system — separate, non-modal notification queue
+ *   - controller.setTitle() — update an open modal's title
+ *   - destroy() — full engine teardown (all modals, toasts, injected
+ *     stylesheets); closeAll() alone does not do this
+ *
+ * WORKS IN:
+ *   - Node / CommonJS      -> const UnifiedModal = require('./unified-modal');
+ *   - Browser <script tag> -> window.UnifiedModal
+ *
+ * ─────────────────────────────────────────────────────────────
+ * OPTIONS
+ * ─────────────────────────────────────────────────────────────
+ *   size:     'sm' | 'md' | 'lg' | 'xl' | 'fullscreen' | { width, height }
+ *   position: 'center' | 'top' | 'bottom' | 'left-drawer' | 'right-drawer'
+ *   behavior: 'fixed' | 'expandable'   (expandable adds a maximize toggle)
+ *   theme:    'brand' (default) | { '--um-header-bg': '#...', ... }
+ *   animation:'fade' | 'scale' | 'slide' | 'none'
+ *   closeOn:  { overlay: true, escape: true }   (either can be false)
+ *   stackPolicy: 'stack' (default, layer on top) | 'replace' (close others first)
+ *   title, footer, content: { type, props }
+ *
+ * USAGE
+ * -----
+ *   UnifiedModal.open({
+ *     title: 'Privacy Policy',
+ *     size: 'lg', position: 'center', behavior: 'expandable',
+ *     content: { type: 'doc', props: { url: 'https://docs.google.com/document/d/.../' } }
+ *   });
+ *
+ *   // Built-in "iconGrid" content type — consumes the {key,label,icon,
+ *   // color,kind} item shape from socialIcons.js / contactIcons.js
+ *   // directly (same data files IconGridModal.js was built for).
+ *   // Only keys present in `links` are rendered; kind:'copy' items
+ *   // (e.g. phone/sms in contactIcons.js) render tap-to-copy buttons
+ *   // instead of links. URLs are protocol-checked via the same
+ *   // sanitiser the "doc"/"gallery" content types use:
+ *   UnifiedModal.open({
+ *     title: 'Follow Us', size: 'sm',
+ *     content: { type: 'iconGrid', props: { items: SOCIAL_ICONS, links: {
+ *       facebook: 'https://facebook.com/yourpage',
+ *       instagram: 'https://instagram.com/yourprofile'
+ *     } } }
+ *   });
+ *
+ *   // Add your own content type anywhere in the project:
+ *   UnifiedModal.registerContentType('myWidget', function (props, bodyEl) {
+ *     bodyEl.textContent = 'Hello ' + props.name;
+ *   });
+ *
+ *   // Built-in confirm/alert dialogs (ported from modal_manager.js):
+ *   UnifiedModal.confirm({
+ *     title: 'Delete file?', message: 'This cannot be undone.',
+ *     confirmType: 'danger', onConfirm: () => doDelete()
+ *   });
+ *   UnifiedModal.alert({ title: 'Saved', message: 'Your changes were saved.' });
+ *
+ *   // A controller returned by open()/confirm()/alert() also supports:
+ *   //   controller.setTitle('New title')
+ *   // And UnifiedModal.escapeHtml(str) is available for any custom
+ *   // content-type renderer that builds HTML via innerHTML.
+ *
+ *   // Non-modal toast notifications — stack, auto-dismiss, no overlay:
+ *   UnifiedModal.notify.success('Changes saved.');
+ *   UnifiedModal.notify({
+ *     type: 'error', title: 'Upload failed', message: 'File too large.',
+ *     duration: 0, position: 'bottom-right'   // duration:0 = sticky
+ *   });
+ *   UnifiedModal.closeAllNotifications();
+ *
+ *   // Full teardown (SPA unmount, etc.) — closes everything and
+ *   // removes every stylesheet the engine has injected:
+ *   UnifiedModal.destroy();
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) {
+        module.exports = factory();
+    } else {
+        root.UnifiedModal = factory();
+    }
+}(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    // ---------------------------------------------------------------
+    // BRAND THEME — CSS custom properties, override via options.theme
+    // ---------------------------------------------------------------
+    const BRAND_THEME = {
+        '--um-header-bg': '#1a2744',
+        '--um-header-fg': '#ffffff',
+        '--um-accent':    '#ffd400',
+        '--um-border':    '#1a2744',
+        '--um-radius':    '16px',
+        '--um-overlay-bg': 'rgba(0,0,0,.70)',
+        '--um-font':      '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+    };
+
+    const SIZE_PRESETS = {
+        sm:         { width: '360px' },
+        md:         { width: '460px' },
+        lg:         { width: '640px' },
+        xl:         { width: '860px' },
+        fullscreen: { width: '100vw', height: '100vh' }
+    };
+
+    // ---------------------------------------------------------------
+    // SHELL STYLES — injected once. Content-type renderers may inject
+    // their own additional styles (see doc renderer below).
+    // ---------------------------------------------------------------
+    function _injectShellStyles() {
+        if (document.getElementById('um-shell-styles')) return;
+
+        const css = [
+            '.um-overlay{position:fixed;inset:0;background:var(--um-overlay-bg);',
+            'z-index:99999;display:flex;opacity:0;transition:opacity .22s ease;}',
+            '.um-overlay.um-active{opacity:1;}',
+            '.um-overlay[data-position="center"]{align-items:center;justify-content:center;}',
+            '.um-overlay[data-position="top"]{align-items:flex-start;justify-content:center;padding-top:40px;}',
+            '.um-overlay[data-position="bottom"]{align-items:flex-end;justify-content:center;padding-bottom:40px;}',
+            '.um-overlay[data-position="left-drawer"]{align-items:stretch;justify-content:flex-start;}',
+            '.um-overlay[data-position="right-drawer"]{align-items:stretch;justify-content:flex-end;}',
+
+            '.um-modal{background:#fff;border-radius:var(--um-radius);border:1px solid var(--um-border);',
+            'position:relative;display:flex;flex-direction:column;max-height:90vh;',
+            'width:90%;max-width:95vw;box-sizing:border-box;font-family:var(--um-font);}',
+            '.um-overlay[data-position="left-drawer"] .um-modal,',
+            '.um-overlay[data-position="right-drawer"] .um-modal{max-height:100vh;height:100vh;',
+            'border-radius:0;max-width:min(480px,92vw);}',
+
+            '.um-modal[data-anim="scale"]{transform:scale(.92);opacity:0;transition:transform .22s ease,opacity .22s ease;}',
+            '.um-modal[data-anim="slide"]{transform:translateY(-30px);opacity:0;transition:transform .22s ease,opacity .22s ease;}',
+            '.um-overlay.um-active .um-modal[data-anim="scale"]{transform:scale(1);opacity:1;}',
+            '.um-overlay.um-active .um-modal[data-anim="slide"]{transform:translateY(0);opacity:1;}',
+
+            '.um-header{display:flex;justify-content:space-between;align-items:center;',
+            'background:var(--um-header-bg);border-bottom:1px solid var(--um-accent);',
+            'padding:16px 20px;border-radius:var(--um-radius) var(--um-radius) 0 0;flex-shrink:0;}',
+            '.um-overlay[data-position="left-drawer"] .um-header,',
+            '.um-overlay[data-position="right-drawer"] .um-header{border-radius:0;}',
+            '.um-title{margin:0;font-size:1.15rem;color:var(--um-header-fg);font-weight:700;}',
+            '.um-header-actions{display:flex;gap:8px;flex-shrink:0;}',
+            '.um-icon-btn{background:var(--um-header-bg);border:2px solid var(--um-accent);color:var(--um-accent);',
+            'width:26px;height:26px;border-radius:50%;cursor:pointer;display:inline-flex;align-items:center;',
+            'justify-content:center;padding:0;transition:background .2s,color .2s;}',
+            '.um-icon-btn:hover{background:var(--um-accent);color:var(--um-header-bg);}',
+            '.um-icon-btn:focus-visible{outline:2px solid var(--um-accent);outline-offset:2px;}',
+
+            '.um-body{padding:20px;overflow-y:auto;flex:1 1 auto;}',
+            '.um-footer{padding:14px 20px;border-top:1px solid #eee;flex-shrink:0;display:flex;',
+            'justify-content:flex-end;gap:10px;}',
+
+            '@media (prefers-reduced-motion:reduce){.um-overlay,.um-modal{transition:none !important;}}',
+
+            '@media (prefers-color-scheme:dark){',
+            '.um-modal{background:#1e1f26;border-color:#333646;color:#e8e8ea;}',
+            '.um-body{color:#e8e8ea;}',
+            '.um-footer{border-top-color:#333646;}',
+            '}'
+        ].join('');
+
+        const style = document.createElement('style');
+        style.id = 'um-shell-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    // ---------------------------------------------------------------
+    // Content-type registry — doc/gallery/confirm logic lives here,
+    // decoupled from the shell.
+    // ---------------------------------------------------------------
+    const _contentTypes = {};
+
+    function registerContentType(type, rendererFn) {
+        if (typeof rendererFn !== 'function') {
+            throw new Error('UnifiedModal.registerContentType: rendererFn must be a function.');
+        }
+        _contentTypes[type] = rendererFn;
+    }
+
+    // Introspection — lets callers check what's registered before use,
+    // e.g. to decide whether to open('markdown', ...) or fall back.
+    // Internal types (prefixed "_", like "_rawNode") are excluded from
+    // listContentTypes() since they're implementation details, not a
+    // public content-type API surface — but hasContentType() still
+    // reports on them accurately if asked directly.
+    function hasContentType(type) {
+        return Object.prototype.hasOwnProperty.call(_contentTypes, type);
+    }
+
+    function listContentTypes() {
+        return Object.keys(_contentTypes).filter(function (t) { return t.charAt(0) !== '_'; });
+    }
+
+    // ---------------------------------------------------------------
+    // Internal state
+    // ---------------------------------------------------------------
+    const _stack = []; // open modal controllers, last = topmost
+
+    function _uid() {
+        return 'um-' + Math.random().toString(36).slice(2, 9);
+    }
+
+    function _reducedMotion() {
+        return typeof window !== 'undefined' && window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+
+    // ---------------------------------------------------------------
+    // BODY SCROLL LOCK — reference counted so stacked modals restore
+    // the original overflow only once the last one closes.
+    // ---------------------------------------------------------------
+    let _scrollLockCount = 0;
+    let _savedBodyOverflow = '';
+
+    function _lockScroll() {
+        if (_scrollLockCount === 0) {
+            _savedBodyOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+        }
+        _scrollLockCount++;
+    }
+
+    function _unlockScroll() {
+        _scrollLockCount = Math.max(0, _scrollLockCount - 1);
+        if (_scrollLockCount === 0) {
+            document.body.style.overflow = _savedBodyOverflow;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // BACKGROUND aria-hidden — while any modal is open, everything
+    // else in <body> (except toast containers, which should remain
+    // announceable) is hidden from assistive tech, so screen-reader
+    // virtual-cursor navigation can't wander behind the dialog. Only
+    // applied on the 0→1 modal transition; restored on 1→0.
+    // ---------------------------------------------------------------
+    let _hiddenSiblings = [];
+
+    function _hideBackgroundFromAT(overlay) {
+        _hiddenSiblings = [];
+        Array.prototype.forEach.call(document.body.children, function (el) {
+            if (el === overlay || el.classList.contains('um-toast-container')) return;
+            _hiddenSiblings.push({ el: el, prev: el.getAttribute('aria-hidden') });
+            el.setAttribute('aria-hidden', 'true');
+        });
+    }
+
+    function _restoreBackgroundFromAT() {
+        _hiddenSiblings.forEach(function (rec) {
+            if (rec.prev === null) rec.el.removeAttribute('aria-hidden');
+            else rec.el.setAttribute('aria-hidden', rec.prev);
+        });
+        _hiddenSiblings = [];
+    }
+
+    // ---------------------------------------------------------------
+    // FOCUS TRAP — Tab cycles within the topmost modal only.
+    // ---------------------------------------------------------------
+    function _trapFocus(e, modalEl) {
+        if (e.key !== 'Tab') return;
+        const focusable = modalEl.querySelectorAll(
+            'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // BUILD SHELL — one function builds every modal's DOM, regardless
+    // of content type.
+    // ---------------------------------------------------------------
+    function _buildShell(options) {
+        _injectShellStyles();
+
+        const id = _uid();
+        const size = typeof options.size === 'string'
+            ? (SIZE_PRESETS[options.size] || SIZE_PRESETS.md)
+            : (options.size || SIZE_PRESETS.md);
+        const position = options.position || 'center';
+        const behavior = options.behavior || 'fixed';
+        const animation = _reducedMotion() ? 'none' : (options.animation || 'scale');
+        const closeOn = Object.assign({ overlay: true, escape: true }, options.closeOn || {});
+        const theme = options.theme && options.theme !== 'brand'
+            ? Object.assign({}, BRAND_THEME, options.theme)
+            : BRAND_THEME;
+
+        const lastFocused = document.activeElement;
+
+        // ── Overlay + modal shell ──────────────────────────────────
+        const overlay = document.createElement('div');
+        overlay.className = 'um-overlay';
+        overlay.setAttribute('data-position', position);
+        Object.keys(theme).forEach(function (k) { overlay.style.setProperty(k, theme[k]); });
+
+        const modal = document.createElement('div');
+        modal.className = 'um-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('data-anim', animation);
+        modal.setAttribute('tabindex', '-1');
+        modal.style.width = size.width || '';
+        if (size.height) {
+            // An explicit height must not be silently clamped by the
+            // shell's default .um-modal{max-height:90vh} rule (this is
+            // what makes size:'fullscreen' actually reach 100vh).
+            modal.style.height = size.height;
+            modal.style.maxHeight = size.height;
+        }
+        if (options.size === 'fullscreen') {
+            modal.style.borderRadius = '0'; // edge-to-edge, no rounded corners cut into the viewport
+        }
+
+        // ── Header ──────────────────────────────────────────────────
+        let expandBtn = null;
+        let expanded = false;
+        let preExpandSize = null;
+
+        if (options.header !== false) {
+            const header = document.createElement('div');
+            header.className = 'um-header';
+
+            const titleId = id + '-title';
+            const titleEl = document.createElement('h2');
+            titleEl.className = 'um-title';
+            titleEl.id = titleId;
+            titleEl.textContent = options.title || ''; // textContent — safe by construction, no _esc() needed
+            modal.setAttribute('aria-labelledby', titleId);
+
+            const actions = document.createElement('div');
+            actions.className = 'um-header-actions';
+
+            if (behavior === 'expandable') {
+                expandBtn = document.createElement('button');
+                expandBtn.className = 'um-icon-btn';
+                expandBtn.setAttribute('aria-label', 'Expand');
+                expandBtn.setAttribute('aria-expanded', 'false');
+                expandBtn.innerHTML = '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>';
+                expandBtn.addEventListener('click', function () {
+                    expanded = !expanded;
+                    if (expanded) {
+                        preExpandSize = {
+                            width: modal.style.width,
+                            height: modal.style.height,
+                            maxHeight: modal.style.maxHeight
+                        };
+                        modal.style.width = '96vw';
+                        modal.style.height = '92vh';
+                        modal.style.maxHeight = '92vh'; // must match height, or the shell's default 90vh clamp wins
+                    } else if (preExpandSize) {
+                        modal.style.width = preExpandSize.width;
+                        modal.style.height = preExpandSize.height;
+                        modal.style.maxHeight = preExpandSize.maxHeight;
+                    }
+                    expandBtn.setAttribute('aria-label', expanded ? 'Restore' : 'Expand');
+                    expandBtn.setAttribute('aria-expanded', String(expanded));
+                });
+                actions.appendChild(expandBtn);
+            }
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'um-icon-btn';
+            closeBtn.setAttribute('aria-label', 'Close');
+            closeBtn.innerHTML = '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24"><line x1="5" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><line x1="19" y1="5" x2="5" y2="19" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>';
+            closeBtn.addEventListener('click', function () { controller.close(); });
+            actions.appendChild(closeBtn);
+
+            header.appendChild(titleEl);
+            header.appendChild(actions);
+            modal.appendChild(header);
+        } else {
+            // No header => no aria-labelledby was set above. A role="dialog"
+            // must still have an accessible name (WCAG 4.1.2), so fall back
+            // to aria-label from the title, or a generic label.
+            modal.setAttribute('aria-label', options.title || 'Dialog');
+        }
+
+        // ── Body — content renderer mounts here ────────────────────
+        const body = document.createElement('div');
+        body.className = 'um-body';
+        modal.appendChild(body);
+
+        // ── Footer (optional) ───────────────────────────────────────
+        // options.poweredBy: true is a shorthand for footer: poweredByBadge()
+        // — only applies when no explicit options.footer was given.
+        const footerContent = options.footer || (options.poweredBy ? poweredByBadge(
+            typeof options.poweredBy === 'object' ? options.poweredBy : {}
+        ) : null);
+
+        if (footerContent) {
+            const footer = document.createElement('div');
+            footer.className = 'um-footer';
+            if (options.poweredBy && !options.footer) {
+                footer.style.justifyContent = 'center'; // badge reads better centered than default flex-end
+            }
+            if (footerContent instanceof Node) {
+                footer.appendChild(footerContent);
+            } else {
+                footer.textContent = String(footerContent); // textContent — safe
+            }
+            modal.appendChild(footer);
+        }
+
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        // ── Events ──────────────────────────────────────────────────
+        if (closeOn.overlay) {
+            overlay.addEventListener('click', function (e) {
+                if (e.target === overlay) controller.close();
+            });
+        }
+
+        const keyHandler = function (e) {
+            if (e.key === 'Escape' && closeOn.escape && _stack[_stack.length - 1] === controller) {
+                controller.close();
+            }
+            if (_stack[_stack.length - 1] === controller) _trapFocus(e, modal);
+        };
+        document.addEventListener('keydown', keyHandler);
+
+        // ── Controller ──────────────────────────────────────────────
+        let cleanupContent = null;
+
+        const controller = {
+            id: id,
+            el: modal,
+            overlayEl: overlay,
+            bodyEl: body,
+
+            setContent: function (type, props) {
+                if (typeof cleanupContent === 'function') cleanupContent();
+                body.innerHTML = '';
+                const renderer = _contentTypes[type];
+                if (!renderer) return;
+                cleanupContent = renderer(props || {}, body, controller) || null;
+            },
+
+            setTitle: function (title) {
+                const titleEl = modal.querySelector('.um-title');
+                if (titleEl) titleEl.textContent = title; // textContent — safe
+            },
+
+            close: function (immediate) {
+                document.removeEventListener('keydown', keyHandler);
+                if (typeof cleanupContent === 'function') cleanupContent();
+
+                overlay.classList.remove('um-active');
+
+                let finished = false;
+                const finish = function () {
+                    if (finished) return;
+                    finished = true;
+                    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                    const idx = _stack.indexOf(controller);
+                    if (idx !== -1) _stack.splice(idx, 1);
+                    if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
+                    _unlockScroll();
+                    if (_stack.length === 0) _restoreBackgroundFromAT();
+                    if (typeof options.onClose === 'function') options.onClose();
+                };
+
+                // `immediate` (used by destroy()) skips waiting on
+                // transitionend/timeout and runs teardown synchronously —
+                // without it, a caller that also force-removes overlayEl
+                // right after calling close() (as destroy() does) would
+                // fire onClose() up to 260ms *after* it had already
+                // returned, which is surprising for a "clean slate now"
+                // operation.
+                if (animation === 'none' || immediate) {
+                    finish();
+                } else {
+                    // transitionend is the primary trigger, but if close()
+                    // is called before the opening requestAnimationFrame
+                    // ever ran (or the transition is otherwise interrupted),
+                    // it may never fire — a fallback timer guarantees the
+                    // modal is still cleaned up.
+                    overlay.addEventListener('transitionend', finish, { once: true });
+                    setTimeout(finish, 260);
+                }
+            }
+        };
+
+        // Mount content
+        if (options.content) {
+            controller.setContent(options.content.type, options.content.props);
+        }
+
+        // Animate in
+        requestAnimationFrame(function () {
+            overlay.classList.add('um-active');
+            modal.focus();
+        });
+
+        return controller;
+    }
+
+    // ---------------------------------------------------------------
+    // PUBLIC API
+    // ---------------------------------------------------------------
+
+    function open(options) {
+        options = options || {};
+
+        if (options.stackPolicy === 'replace') {
+            closeAll();
+        }
+
+        const wasEmpty = _stack.length === 0;
+        const controller = _buildShell(options);
+        _stack.push(controller);
+
+        _lockScroll();
+        if (wasEmpty) _hideBackgroundFromAT(controller.overlayEl);
+
+        return controller;
+    }
+
+    function closeTop() {
+        if (_stack.length) _stack[_stack.length - 1].close();
+    }
+
+    function closeAll() {
+        // close() mutates _stack, so iterate over a copy
+        _stack.slice().forEach(function (c) { c.close(); });
+    }
+
+    // ---------------------------------------------------------------
+    // CONFIRM — two-button dialog. Built on open() + the button
+    // design system + the "_rawNode" content type, so it's just a
+    // convenience wrapper, not a separate code path.
+    // ---------------------------------------------------------------
+    function confirm(options) {
+        const settings = Object.assign({
+            title: 'Confirm',
+            message: 'Are you sure?',
+            confirmText: 'Confirm',
+            cancelText: 'Cancel',
+            confirmType: 'primary',
+            size: 'sm',
+            onConfirm: null,
+            onCancel: null
+        }, options || {});
+
+        const msgEl = document.createElement('p');
+        msgEl.style.cssText = 'margin:0;font-size:1rem;line-height:1.6;color:#212529;';
+        msgEl.textContent = settings.message; // textContent — safe
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;width:100%;';
+
+        let controllerRef;
+
+        footer.appendChild(_makeButton(settings.cancelText, 'secondary', function () {
+            controllerRef.close();
+            if (typeof settings.onCancel === 'function') settings.onCancel();
+        }));
+        footer.appendChild(_makeButton(settings.confirmText, settings.confirmType, function () {
+            controllerRef.close();
+            if (typeof settings.onConfirm === 'function') settings.onConfirm();
+        }));
+
+        controllerRef = open({
+            title: settings.title,
+            size: settings.size,
+            footer: footer,
+            content: { type: '_rawNode', props: { node: msgEl } }
+        });
+
+        return controllerRef;
+    }
+
+    // ---------------------------------------------------------------
+    // ALERT — single-button dialog.
+    // ---------------------------------------------------------------
+    function alertDialog(options) {
+        const settings = Object.assign({
+            title: 'Alert',
+            message: '',
+            buttonText: 'OK',
+            size: 'sm',
+            onClose: null
+        }, options || {});
+
+        const msgEl = document.createElement('p');
+        msgEl.style.cssText = 'margin:0;font-size:1rem;line-height:1.6;color:#212529;';
+        msgEl.textContent = settings.message; // textContent — safe
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;width:100%;';
+
+        let controllerRef;
+
+        footer.appendChild(_makeButton(settings.buttonText, 'primary', function () {
+            controllerRef.close();
+            if (typeof settings.onClose === 'function') settings.onClose();
+        }));
+
+        controllerRef = open({
+            title: settings.title,
+            size: settings.size,
+            footer: footer,
+            content: { type: '_rawNode', props: { node: msgEl } }
+        });
+
+        return controllerRef;
+    }
+
+
+    // ---------------------------------------------------------------
+    // POWERED-BY BADGE — copied directly from PBWL.html (classes
+    // renamed ft-powered-* -> um-powered-* to match this file's
+    // naming convention; colors, structure, and the logo asset are
+    // otherwise untouched, byte-for-byte from the source file).
+    // Use as a footer: open({ poweredBy: true, ... }), or standalone
+    // via UnifiedModal.poweredByBadge() to insert anywhere.
+    // ---------------------------------------------------------------
+    function _injectPoweredStyles() {
+        if (document.getElementById('um-powered-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'um-powered-styles';
+        style.textContent = `.um-powered-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: Arial, sans-serif;
+  }
+  .um-powered-label {
+    font-size: 11px;
+    color: #b0b8cc;
+    font-style: italic;
+  }
+  .um-powered-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #ffd400;
+    color: #1a2336;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px 1px 3px;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .um-powered-badge:hover { background: #ffb700; }
+  .um-powered-badge img {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    object-fit: cover;
+    display: block;
+  }`;
+        document.head.appendChild(style);
+    }
+
+    function poweredByBadge(opts) {
+        opts = opts || {};
+        _injectPoweredStyles();
+
+        const container = document.createElement('div');
+        container.innerHTML = `<div class="um-powered-wrap">
+  <span class="um-powered-label">Powered by</span>
+  <a class="um-powered-badge" href="https://wagsone.blogspot.com" target="_blank" rel="noopener noreferrer">
+    <img src="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB2ZXJzaW9uPSIxLjEiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjYxMiIgaGVpZ2h0PSI2MTIiPgo8cGF0aCBkPSJNMCAwIEMyMDEuOTYgMCA0MDMuOTIgMCA2MTIgMCBDNjEyIDIwMS45NiA2MTIgNDAzLjkyIDYxMiA2MTIgQzQxMC4wNCA2MTIgMjA4LjA4IDYxMiAwIDYxMiBDMCA0MTAuMDQgMCAyMDguMDggMCAwIFogIiBmaWxsPSIjMTc5QzBEIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgwLDApIi8+CjxwYXRoIGQ9Ik0wIDAgQzMuMTU0NDcyODIgMC4wMjM3ODc5MSA2LjMwODEwNTI3IDAuMDIwNTA2NzkgOS40NjI2NDY0OCAwLjAxMzkxNjAyIEMyMC4wOTg3NzcxMSAwLjAyODQ3MzQxIDMwLjM1NDIzNjQzIDAuMzMxNDQyODUgNDAuODI3ODgwODYgMi4zMzYxODE2NCBDNDEuNjEzMTYxNjIgMi40NzY3NzAwMiA0Mi4zOTg0NDIzOCAyLjYxNzM1ODQgNDMuMjA3NTE5NTMgMi43NjIyMDcwMyBDMTAwLjExOTg5MjggMTMuNDY5Nzk1MDggMTUxLjkxMTE5NjA4IDQ1LjIwMDc1NjY0IDE4NS44Mjc4ODA4NiA5Mi4zMzYxODE2NCBDMTg2LjIyNjg0NTcgOTIuODg5MzUwNTkgMTg2LjYyNTgxMDU1IDkzLjQ0MjUxOTUzIDE4Ny4wMzY4NjUyMyA5NC4wMTI0NTExNyBDMjIyLjMyNjk1Mjc5IDE0My41NTIxMTkxOCAyMzYuNjcxMTA4ODggMjA1Ljg5MjYxNDk4IDIyNy4xNDAzODA4NiAyNjYuMDIzNjgxNjQgQzIyNi40NjYwNDk2MyAyNjkuODE5ODcyMjMgMjI1LjY5MDUwOTc5IDI3My41Nzg2MDQzIDIyNC44Mjc4ODA4NiAyNzcuMzM2MTgxNjQgQzIyNC42NTEyNzkzIDI3OC4xMjczNDM3NSAyMjQuNDc0Njc3NzMgMjc4LjkxODUwNTg2IDIyNC4yOTI3MjQ2MSAyNzkuNzMzNjQyNTggQzIxNS41MTYwMjkzNyAzMTcuNzE3MjI5MiAxOTcuMzc2MzYxOTcgMzUzLjY3MDk0MzM2IDE3MC43ODQ5MTIxMSAzODIuMjI2ODA2NjQgQzE2OC45OTg3MjAwNSAzODQuMTUyMDQzNiAxNjcuMzIwMjYxNjEgMzg2LjEzMTE1NzM2IDE2NS42NDAzODA4NiAzODguMTQ4NjgxNjQgQzE0Mi42OTU2NTUxNSA0MTQuMzAzNTYzOTMgMTExLjM5ODYyMjA3IDQzMi4wMTU5ODQ3NyA3OS4yNjUzODA4NiA0NDQuMjczNjgxNjQgQzc4LjI3ODIwMDY4IDQ0NC42NTE2OTkyMiA3Ny4yOTEwMjA1MSA0NDUuMDI5NzE2OCA3Ni4yNzM5MjU3OCA0NDUuNDE5MTg5NDUgQzcwLjE5Mjc5NTg3IDQ0Ny42NzEyNjkzNiA2NC4yMjY5MTgyNSA0NDkuMjgwMDI5ODQgNTcuODI3ODgwODYgNDUwLjMzNjE4MTY0IEM1Ny44Mjc4ODA4NiA0NDguMzU2MTgxNjQgNTcuODI3ODgwODYgNDQ2LjM3NjE4MTY0IDU3LjgyNzg4MDg2IDQ0NC4zMzYxODE2NCBDMzIuMDg3ODgwODYgNDQ0LjMzNjE4MTY0IDYuMzQ3ODgwODYgNDQ0LjMzNjE4MTY0IC0yMC4xNzIxMTkxNCA0NDQuMzM2MTgxNjQgQy0yMC4xNzIxMTkxNCA0NDcuOTY2MTgxNjQgLTIwLjE3MjExOTE0IDQ1MS41OTYxODE2NCAtMjAuMTcyMTE5MTQgNDU1LjMzNjE4MTY0IEMtMjkuNDQ1ODI4OTUgNDU0Ljg4OTQ0MTQ3IC0zOC4xNTYwMTA1IDQ1My41MTg4MzUxMSAtNDcuMTcyMTE5MTQgNDUxLjMzNjE4MTY0IEMtNDcuODU0NTE2NiA0NTEuMTgxOTc3NTQgLTQ4LjUzNjkxNDA2IDQ1MS4wMjc3NzM0NCAtNDkuMjM5OTkwMjMgNDUwLjg2ODg5NjQ4IEMtNzcuNjgxMDMxMDkgNDQ0LjQyODA4Mjc2IC0xMDQuODA0ODU4MjUgNDMxLjczMzc0OTg4IC0xMjguMTcyMTE5MTQgNDE0LjMzNjE4MTY0IEMtMTI4Ljc2NTQxMDE2IDQxMy44OTgzODM3OSAtMTI5LjM1ODcwMTE3IDQxMy40NjA1ODU5NCAtMTI5Ljk2OTk3MDcgNDEzLjAwOTUyMTQ4IEMtMTY2LjE5NTg2MzE3IDM4Ni4wNzQ2MjIzOCAtMTkzLjIwNjgxMTIyIDM0OC45NDA2NjY2IC0yMDguMzc2MjIwNyAzMDYuNTQxNzQ4MDUgQy0yMDkuMDMwNjA1MjQgMzA0LjcyODM0MDEgLTIwOS43MTc5ODk4IDMwMi45MjY4NzQwNiAtMjEwLjQxNDMwNjY0IDMwMS4xMjkxNTAzOSBDLTIxMy40MDkzNDIzNyAyOTMuMzg2MTcwNDEgLTIxNS40Nzc2NjQ4NSAyODUuNDUwMzc5NzMgLTIxNy4xNzIxMTkxNCAyNzcuMzM2MTgxNjQgQy0yMTcuMzU4Mzg4NjcgMjc2LjQ2MTU1MjczIC0yMTcuNTQ0NjU4MiAyNzUuNTg2OTIzODMgLTIxNy43MzY1NzIyNyAyNzQuNjg1NzkxMDIgQy0yMzAuMDc5ODE1IDIxMy45NzM3NzMzNCAtMjE2LjkxMzQ2OTI5IDE1MC44OTkxNjM1IC0xODMuMTcyMTE5MTQgOTkuMzM2MTgxNjQgQy0xODAuMzUyMjE3NDcgOTUuMTkyNDc0NjMgLTE3Ny4zMTYxMjk1OCA5MS4yMzg4OTI5NiAtMTc0LjE3MjExOTE0IDg3LjMzNjE4MTY0IEMtMTczLjQ1NjY4OTQ1IDg2LjQyOTk3MDcgLTE3Mi43NDEyNTk3NyA4NS41MjM3NTk3NyAtMTcyLjAwNDE1MDM5IDg0LjU5MDA4Nzg5IEMtMTUzLjQwMDQ4NTA0IDYxLjM3NjY2NDc1IC0xMzEuOTMzODU2MDYgNDMuMTU1NDMzMjIgLTEwNi4xNzIxMTkxNCAyOC4zMzYxODE2NCBDLTEwNS40ODU2OTMzNiAyNy45MzgwMjI0NiAtMTA0Ljc5OTI2NzU4IDI3LjUzOTg2MzI4IC0xMDQuMDkyMDQxMDIgMjcuMTI5NjM4NjcgQy04Ny45ODk5MjkwMyAxNy44ODkxMzQwOCAtNzAuODAxNjUyODQgMTEuMzY1NDQ4NjggLTUyLjkyMjExOTE0IDYuNDYxMTgxNjQgQy01MS45MzA5MTA2NCA2LjE4NzA5NDczIC01MC45Mzk3MDIxNSA1LjkxMzAwNzgxIC00OS45MTg0NTcwMyA1LjYzMDYxNTIzIEMtMzMuMjk2NDAyODEgMS4yODk1MDY0OCAtMTcuMTQ1NTQzNTMgLTAuMTM4MDQzNTQgMCAwIFogIiBmaWxsPSIjMDAwMDAwIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgzMDIuMTcyMTE5MTQwNjI1LDc3LjY2MzgxODM1OTM3NSkiLz4KPHBhdGggZD0iTTAgMCBDMjAxLjk2IDAgNDAzLjkyIDAgNjEyIDAgQzYxMiAyMDEuOTYgNjEyIDQwMy45MiA2MTIgNjEyIEM0MTAuMDQgNjEyIDIwOC4wOCA2MTIgMCA2MTIgQzAgNDEwLjA0IDAgMjA4LjA4IDAgMCBaIE0yNzQgMTEgQzI3My42NyAxMS42NiAyNzMuMzQgMTIuMzIgMjczIDEzIEMyNzAuMTgzNTkzNzUgMTMuNTI3MzQzNzUgMjcwLjE4MzU5Mzc1IDEzLjUyNzM0Mzc1IDI2Ni40Mzc1IDEzLjkzNzUgQzE5OC4zODg3MjgxNCAyMi4xMjIyODQ1MyAxMjkuMTMzNjczMTMgNjAuMjczOTc2MzcgODYuMzE2NDA2MjUgMTE0LjEyMTA5Mzc1IEM4NC4yMTc3NzU2NCAxMTYuNzI5MzQxMjQgODIuMDU4MzMzMyAxMTkuMjYxMDA2NjIgNzkuODYzNzY5NTMgMTIxLjc4NzU5NzY2IEM3NC4zMjkzNTE4OSAxMjguMTg5Nzg3NzMgNjkuNDk5OTM5NyAxMzQuODI0MjE5ODcgNjUgMTQyIEM2NC4yNzY1OTQyNCAxNDMuMTM3Njc4MjIgNjQuMjc2NTk0MjQgMTQzLjEzNzY3ODIyIDYzLjUzODU3NDIyIDE0NC4yOTgzMzk4NCBDMzIuNjczNTI4MTQgMTkyLjg3Mjk5MjUzIDE0Ljg4OTgyMjIyIDI0Ni41NTY0MjY4OSAxNC42ODc1IDMwNC4zNzUgQzE0LjY4NDU0OTI2IDMwNS4xMjY1NzM3OSAxNC42ODE1OTg1MSAzMDUuODc4MTQ3NTggMTQuNjc4NTU4MzUgMzA2LjY1MjQ5NjM0IEMxNC42NjQ0MjU1NiAzMjIuNjg0MzUwODMgMTYuNDEzMzc1NDMgMzM4LjE4NDcwODEzIDE5IDM1NCBDMTkuMTM4NDEzMDkgMzU0Ljg2MTU3NzE1IDE5LjI3NjgyNjE3IDM1NS43MjMxNTQzIDE5LjQxOTQzMzU5IDM1Ni42MTA4Mzk4NCBDMjAuMTU2ODA2MDYgMzYxLjEwMzUxMDUgMjEuMDM2MzYzMTcgMzY1LjU0OTM4ODY2IDIyIDM3MCBDMjIuMzc1MTE3MTkgMzcxLjg4NzE4NzUgMjIuMzc1MTE3MTkgMzcxLjg4NzE4NzUgMjIuNzU3ODEyNSAzNzMuODEyNSBDMjcuMDI3ODk3MzkgMzk0LjM0MjQyNzc2IDM0Ljc5NDA3Njg3IDQxNC4yMTI2OTY0OCA0NCA0MzMgQzQ0LjY2MjczOTI2IDQzNC4zNjIyMTY4IDQ0LjY2MjczOTI2IDQzNC4zNjIyMTY4IDQ1LjMzODg2NzE5IDQzNS43NTE5NTMxMiBDNTEuMjc1NTA4MjIgNDQ3Ljg0MDA2MTQ1IDU3Ljc4OTE5NjA2IDQ1OS4yNDEwNzY0NiA2NS41NDM3MDExNyA0NzAuMjYzNDI3NzMgQzY2LjExMDY0Njk3IDQ3MS4wNzYyNjIyMSA2Ni42Nzc1OTI3NyA0NzEuODg5MDk2NjggNjcuMjYxNzE4NzUgNDcyLjcyNjU2MjUgQzY3Ljc2NjYyODQyIDQ3My40MzM3NzQ0MSA2OC4yNzE1MzgwOSA0NzQuMTQwOTg2MzMgNjguNzkxNzQ4MDUgNDc0Ljg2OTYyODkxIEM3MC44ODgwNzg4MiA0NzguNTY1ODQ2OCA3MSA0ODEuNzg3NzYwMDUgNzEgNDg2IEM3MC4wMSA0ODYgNjkuMDIgNDg2IDY4IDQ4NiBDNjcuODI5ODQzNzUgNDg2LjkyOTQxNDA2IDY3LjY1OTY4NzUgNDg3Ljg1ODgyODEzIDY3LjQ4NDM3NSA0ODguODE2NDA2MjUgQzY1LjI2MTc3MDkxIDUwMC4xNTQwNTE1NiA2NS4yNjE3NzA5MSA1MDAuMTU0MDUxNTYgNjMgNTAzLjYyNSBDNTkuMzQ2MjA5OTkgNTA5Ljc5MDc3MDY0IDU4LjM2NzA3NTgzIDUxNy4wMjQwODAzMiA1NyA1MjQgQzU2LjM0IDUyNCA1NS42OCA1MjQgNTUgNTI0IEM1My4zMDE2NzM5MSA1MjkuODM3OTk1OTIgNTIuNzQ3MTI4MDcgNTM0LjkzMTA3MzcxIDUzIDU0MSBDNTIuMzQgNTQxIDUxLjY4IDU0MSA1MSA1NDEgQzUwLjgwNjY0MDYyIDU0MS44NTcyMjY1NiA1MC42MTMyODEyNSA1NDIuNzE0NDUzMTIgNTAuNDE0MDYyNSA1NDMuNTk3NjU2MjUgQzQ5LjA4MjA3NTA3IDU0OS40NDY1MzE3NCA0Ny43MzYxOTkxNSA1NTUuMjU3MTg3NDMgNDYgNTYxIEM0NS4zNCA1NjEgNDQuNjggNTYxIDQ0IDU2MSBDNDQgNTYzLjMxIDQ0IDU2NS42MiA0NCA1NjggQzQzLjM0IDU2OCA0Mi42OCA1NjggNDIgNTY4IEM0MiA1NjkuMzIgNDIgNTcwLjY0IDQyIDU3MiBDNDcuMDI3Nzc2MTggNTcyLjMxNDIzNjAxIDUwLjA3MzcwMjEgNTcxLjU4MTc5NzUxIDU0LjgxOTMzNTk0IDU2OS43MTk0ODI0MiBDNTkuMDI5OTQ2OTggNTY4LjMzMDI0NDc3IDYzLjQyMTQ1NjIyIDU2OC4yMDk1MzM2MiA2Ny44MjAzMTI1IDU2Ny45MTYwMTU2MiBDNzIuOTMzODk5ODggNTY3LjQ1NzQ2MDIzIDc1Ljc2NzYwNjYzIDU2Ni4wODMwNzk2NSA4MCA1NjMgQzgzLjg3NSA1NjIuMjUgODMuODc1IDU2Mi4yNSA4NyA1NjIgQzg3IDU2MS4zNCA4NyA1NjAuNjggODcgNTYwIEM4OC4yNTgxMjUgNTYwLjEyMzc1IDg5LjUxNjI1IDU2MC4yNDc1IDkwLjgxMjUgNTYwLjM3NSBDOTUuMDMxMTc2NjggNTYwLjM4ODEwMTQ4IDk3LjQ2ODM3ODcxIDU1OS40MTczNjQwNSAxMDEuMDYyNSA1NTcuMjUgQzEwNy45ODMwNDc5NyA1NTMuMTE3MTY1NzIgMTE1LjIxNzY0NTc0IDU1MS43MTcyNjk3NSAxMjMgNTUwIEMxMjUuNjcwODk2NjggNTQ5LjM0OTA5NDcyIDEyOC4zMzUyNDc3IDU0OC42NzU4MjE1IDEzMSA1NDggQzEzMSA1NDcuMzQgMTMxIDU0Ni42OCAxMzEgNTQ2IEMxMzcuNjU3ODUwNzggNTQ1LjI2OTg5NjI2IDE0MC44NDU1NDU4IDU0Ny4zODk3NTM5MiAxNDYuMTI1IDU1MS4yNSBDMTQ3LjcyODA2OTMyIDU1Mi4zNjQ3MTcwOCAxNDkuMzM0OTkzNjkgNTUzLjQ3MzkwNjM5IDE1MC45NDUzMTI1IDU1NC41NzgxMjUgQzE1MS43NzcwODAwOCA1NTUuMTQ4NTM1MTYgMTUyLjYwODg0NzY2IDU1NS43MTg5NDUzMSAxNTMuNDY1ODIwMzEgNTU2LjMwNjY0MDYyIEMxNzUuOTg4MTg4ODYgNTcxLjM1NjI2OTU1IDIwMS4xMDI2MTY5IDU4Mi4zMDkwMzc0OSAyMjcgNTkwIEMyMjguMjM3NzQxNyA1OTAuMzcyNDU4NSAyMjguMjM3NzQxNyA1OTAuMzcyNDU4NSAyMjkuNTAwNDg4MjggNTkwLjc1MjQ0MTQxIEMyNDkuMTEwNjgyMjMgNTk2LjU2MTgyNTQ5IDI2OS43Njg4NTczNSA2MDAuMTEzNTk1NTggMjkwLjIzNDM3NSA2MDAuMjAzMTI1IEMyOTEuMjk4ODk4OTMgNjAwLjIwOTkxMjcyIDI5Mi4zNjM0MjI4NSA2MDAuMjE2NzAwNDQgMjkzLjQ2MDIwNTA4IDYwMC4yMjM2OTM4NSBDMjk2Ljg5MDE2NjY2IDYwMC4yNDA2MDI4MSAzMDAuMzE5OTk5NDggNjAwLjI0Njg4NjcyIDMwMy43NSA2MDAuMjUgQzMwNC45MTE5Njg5OSA2MDAuMjUyMzM2NDMgMzA2LjA3MzkzNzk5IDYwMC4yNTQ2NzI4NSAzMDcuMjcxMTE4MTYgNjAwLjI1NzA4MDA4IEMzMjUuMDMxOTA1MyA2MDAuMjcwNTg5NjUgMzQyLjQxNjIyMjE3IDU5OS42MzYxNjQ0NiAzNjAgNTk3IEMzNjAgNTk2LjM0IDM2MCA1OTUuNjggMzYwIDU5NSBDMzYxLjA3NzY1NjI1IDU5NC44OTk0NTMxMyAzNjIuMTU1MzEyNSA1OTQuNzk4OTA2MjUgMzYzLjI2NTYyNSA1OTQuNjk1MzEyNSBDMzczLjM4MTY1MTQ2IDU5My40MjA4MTc1MSAzODMuMjYyMjA1MjQgNTg5LjkxMzc3ODAzIDM5MyA1ODcgQzM5NC4zMDkwNDI5NyA1ODYuNjA5NjU1NzYgMzk0LjMwOTA0Mjk3IDU4Ni42MDk2NTU3NiAzOTUuNjQ0NTMxMjUgNTg2LjIxMTQyNTc4IEM0NDkuMDcyNzYxMTcgNTY5Ljg4NzMzMjExIDQ5OS4xMDMyMDQxMSA1MzMuMTEwNzMxMDggNTMzIDQ4OSBDNTMzLjUwODUzNTE2IDQ4OC4zNDIyNTU4NiA1MzQuMDE3MDcwMzEgNDg3LjY4NDUxMTcyIDUzNC41NDEwMTU2MiA0ODcuMDA2ODM1OTQgQzU0My42Mjk1MjU5MyA0NzUuMTg3NTc5NDYgNTUxLjY5MjkxNTEgNDYyLjk5Mzk3OTEzIDU1OSA0NTAgQzU1OS40NzAzNDY2OCA0NDkuMTY3NzQ5MDIgNTU5Ljk0MDY5MzM2IDQ0OC4zMzU0OTgwNSA1NjAuNDI1MjkyOTcgNDQ3LjQ3ODAyNzM0IEM1NzQuMzA2ODA5OTkgNDIyLjY2MTg4MDc1IDU4NC4xMzI2NDMzMyAzOTUuNzQyOTYyMDcgNTkwLjMyMjUwOTc3IDM2OC4wMDUxMjY5NSBDNTkxLjAwNjQ4MzQgMzY0Ljk3MTI0MTc1IDU5MS43NTI0NDQxNCAzNjEuOTU2MjM4NDQgNTkyLjUgMzU4LjkzNzUgQzYwNy4zNTU3MTY5NyAyODguMTk1OTkwNjQgNTkwLjA5MzM4NzIgMjEwLjI0NzUxMDE2IDU1MS44ODI4MTI1IDE0OS41ODU5Mzc1IEM1NDkuOTc1MDI5OTggMTQ2LjY4MjEyMzk1IDU0OC4wMDg3NjgzMSAxNDMuODM0NzY3NjMgNTQ2IDE0MSBDNTQ1LjIwMDE5Mzg3IDEzOS44NTA0ODc4NCA1NDQuNDAwNzMyIDEzOC43MDA3MzYxIDU0My42MDE1NjI1IDEzNy41NTA3ODEyNSBDNTM2LjAwMzEzNDAyIDEyNi42OTA4MzI2OCA1MjcuNzAwNDE1MzYgMTE2LjU5OTUyNjc5IDUxOC42NzU3ODEyNSAxMDYuODk4NDM3NSBDNTE2LjI5ODcxNTkzIDEwNC4zMjM1NzI1OCA1MTMuOTkwNjA4OTIgMTAxLjcwMzE3MDM0IDUxMS42ODc1IDk5LjA2MjUgQzUwMS44ODg1NDA4IDg4LjE4MjUxNjgzIDQ5MC43MzUzNDQzNCA3OC43MTYyODAzNiA0NzkgNzAgQzQ3OC4wMzU4NjE4MiA2OS4yODMxMjAxMiA0NzguMDM1ODYxODIgNjkuMjgzMTIwMTIgNDc3LjA1MjI0NjA5IDY4LjU1MTc1NzgxIEM0NDMuNTM4MDcxMDcgNDMuODQxNjcxMDUgMzk0LjA1MjkyMjU5IDE1IDM1MSAxNSBDMzUxIDEzLjY4IDM1MSAxMi4zNiAzNTEgMTEgQzMyNS41OSAxMSAzMDAuMTggMTEgMjc0IDExIFogIiBmaWxsPSIjMTUwRDBBIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgwLDApIi8+CjxwYXRoIGQ9Ik0wIDAgQzguNzk1NDA1ODUgMS4zNTMxMzkzNiAxNy4wNDc2MjUwNiAyLjg0MTg3MDgyIDI1LjU2MjUgNS4xODc1IEMyNi42ODY1NjI1IDUuNDk1MDIxOTcgMjcuODEwNjI1IDUuODAyNTQzOTUgMjguOTY4NzUgNi4xMTkzODQ3NyBDNzMuMTEyMDk3NjQgMTguNDE3MjY1NDUgMTE0LjQ5MzM1NDU1IDQwLjU3MzgzMjU0IDE0OCA3MiBDMTQ5LjQxMDg5NjcxIDczLjIzNTc4NTQyIDE1MC44MjcxMDUyNiA3NC40NjU1NDg0MSAxNTIuMjUgNzUuNjg3NSBDMTU3Ljk5MTkwMjggODAuNjkyNjYxNzEgMTYzLjE3NTgxMDM4IDg2LjA4ODM4NzkxIDE2OC4xMzY3MTg3NSA5MS44NjMyODEyNSBDMTY5LjQwNjc0MjYgOTMuMzE5NjgxNzcgMTcwLjcwMjQwMDQ4IDk0Ljc1NDAyNzYgMTcyLjAxOTUzMTI1IDk2LjE2Nzk2ODc1IEMyMTguMjI4NjIzNDQgMTQ1Ljg3Mzk2NTIyIDI0NC4yMDA3ODQ1OCAyMTUuNjIwMDc5NzIgMjQ2IDI4MyBDMjQ2LjAyNzIzMTQ1IDI4My44OTMxNTkxOCAyNDYuMDU0NDYyODkgMjg0Ljc4NjMxODM2IDI0Ni4wODI1MTk1MyAyODUuNzA2NTQyOTcgQzI0OC4wNjY5NTc1OSAzNjAuMjA0MDk0ODYgMjE5LjAwMzMyOCA0MzQuMDkzNTQ0MDcgMTY5IDQ4OSBDMTY4LjM5NTEwNzQyIDQ4OS42NjY2MDY0NSAxNjcuNzkwMjE0ODQgNDkwLjMzMzIxMjg5IDE2Ny4xNjY5OTIxOSA0OTEuMDIwMDE5NTMgQzEyNy4xNDI5NDc2OCA1MzQuOTM1MDAzOSA3MS45NTU4NDU1NCA1NjkuMDQzNjAzOTMgMTMgNTgwIEMxMS42OCA1ODAgMTAuMzYgNTgwIDkgNTgwIEM5IDU1Ny44OSA5IDUzNS43OCA5IDUxMyBDMTIuNDk3NTk2MTEgNTExLjYwMDk2MTU2IDE1LjY2MzA5NTI0IDUxMC41MDE5Mjg3IDE5LjI1IDUwOS41IEM3Ny41MDE3NDY1NCA0OTEuNjkzNTAwMiAxMjQuNzcxMTM2MzIgNDUyLjE5OTAzMjAxIDE1My42ODc1IDM5OC42ODc1IEMxNTguNTUwNjA4NDYgMzg5LjQzODc1NTgzIDE2Mi4zMjE0Njc3MyAzNzkuNzY2OTIxMiAxNjYgMzcwIEMxNjYuMjUyNjU2MjUgMzY5LjM0MzcwNjA1IDE2Ni41MDUzMTI1IDM2OC42ODc0MTIxMSAxNjYuNzY1NjI1IDM2OC4wMTEyMzA0NyBDMTcwLjI4ODgyMTc2IDM1OC44NTMzNjU1NiAxNzIuOTc3Nzk1OTMgMzQ5LjU5MTE5Mzc3IDE3NSAzNDAgQzE3NS4yNzcyMjkgMzM4Ljc1MTE0MDE0IDE3NS4yNzcyMjkgMzM4Ljc1MTE0MDE0IDE3NS41NjAwNTg1OSAzMzcuNDc3MDUwNzggQzE4OC4zMjMwNDczMiAyNzcuODk4NDI1MTcgMTc0LjgyMjIwNDU3IDIxNS4wNzMyMDc1MSAxNDIuNDAzMzIwMzEgMTY0LjE0NDUzMTI1IEMxMzkuMTg2NTUxNjkgMTU5LjIyODcxNzgyIDEzNS42ODM0MzI5IDE1NC41NzcyMDcwNiAxMzIgMTUwIEMxMzEuMzE5Mzc1IDE0OS4xMjg1OTM3NSAxMzAuNjM4NzUgMTQ4LjI1NzE4NzUgMTI5LjkzNzUgMTQ3LjM1OTM3NSBDMTExLjcxMDQ1NjQ0IDEyNC40NDE1NDgxOCA5MC4yOTkyMzYyOCAxMDYuNTk5OTQ4NzMgNjUgOTIgQzY0LjM2MjM5NzQ2IDkxLjYyODkxMTEzIDYzLjcyNDc5NDkyIDkxLjI1NzgyMjI3IDYzLjA2Nzg3MTA5IDkwLjg3NTQ4ODI4IEM0My4yNzA2NDE4IDc5LjQ2NDMyOTU0IDIxLjk3NTA4OTQ0IDczLjU5MjUyNjgzIDAgNjcgQzAgNDQuODkgMCAyMi43OCAwIDAgWiAiIGZpbGw9IiNFQTYyMEQiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDM1MSwxNSkiLz4KPHBhdGggZD0iTTAgMCBDOC44Nzk0MjcwMiAzLjk0NjgwMDg5IDEzLjQ0MDI3MTM1IDEzLjkzODQ1MjgxIDE3LjkzNzUgMjIgQzE4LjkxNjk0MDYyIDIzLjcyNzA1MDc4IDE5Ljg5NjM5OTggMjUuNDU0MDkxNDggMjAuODc3MTY2NzUgMjcuMTgwMzg5NCBDMjEuNTQ2NDE1MzkgMjguMzU5NTEwNyAyMi4yMTQ0ODE1MyAyOS41MzkzMDM5MyAyMi44ODEzNzgxNyAzMC43MTk3NTcwOCBDMjYuMzE5OTk3NzUgMzYuODA2MTI3MzQgMjkuODQzMjU2MjYgNDIuODQyMjY0ODggMzMuMzc1IDQ4Ljg3NSBDMzQuOTkzMjI1NzEgNTEuNjQ0OTA2MDMgMzYuNjExMjI0MiA1NC40MTQ5MzI0MSAzOC4yMjY1NjI1IDU3LjE4NjUyMzQ0IEMzOS40MjE0MzkzNSA1OS4yMjU4ODM3NiA0MC42MjU4MDU4MyA2MS4yNTk2OTM2NCA0MS44MzU5Mzc1IDYzLjI5MDAzOTA2IEM0Mi40Nzc4OTA2MiA2NC4zNzI1MjkzIDQzLjExOTg0Mzc1IDY1LjQ1NTAxOTUzIDQzLjc4MTI1IDY2LjU3MDMxMjUgQzQ0LjY2NzgwMjczIDY4LjA1NTU1NDIgNDQuNjY3ODAyNzMgNjguMDU1NTU0MiA0NS41NzIyNjU2MiA2OS41NzA4MDA3OCBDNDYuODc1IDcyIDQ2Ljg3NSA3MiA0Ni44NzUgNzQgQzQ3LjUzNSA3NCA0OC4xOTUgNzQgNDguODc1IDc0IEM0OC45NjEyODY2MiA3Mi45ODQ4NjMyOCA0OS4wNDc1NzMyNCA3MS45Njk3MjY1NiA0OS4xMzY0NzQ2MSA3MC45MjM4MjgxMiBDNDkuOTgxNjY3NjEgNjQuMjE1MTYwMyA1MS45MzI3MzEyNiA1Ny43MzI3MDMwNyA1My42OTE0MDYyNSA1MS4yMTg3NSBDNTQuMDcxNTgyMjEgNDkuNzk1NDExMTQgNTQuNDUxMjg5NjggNDguMzcxOTQ3MDcgNTQuODMwNTUxMTUgNDYuOTQ4MzY0MjYgQzU1LjgyMzc3OTkyIDQzLjIyNTIyMTM3IDU2LjgyMzMxMTc0IDM5LjUwMzc5OTc4IDU3LjgyNDIxODc1IDM1Ljc4MjcxNDg0IEM1OC44NDY5NTIwMSAzMS45NzU5NjQ4NCA1OS44NjM2NDE4NCAyOC4xNjc2MDE4NCA2MC44ODA4NTkzOCAyNC4zNTkzNzUgQzYyLjg3MzAzNDQyIDE2LjkwNDY2ODk5IDY0Ljg3MTg3ODkyIDkuNDUxNzczMTMgNjYuODc1IDIgQzY5Ljk0MjY2NjA5IDQuOTY3NTk1MTEgNzEuODgyMzk5NDIgNy41NTU3NTU4OCA3My44MTI1IDExLjM3NSBDNzcuMTc5MTQ3MDkgMTcuODA4ODc0MzYgODAuNzk3ODEwNDcgMjQuMDY1OTk4ODEgODQuNSAzMC4zMTI1IEM4NS4wNTAzNDkxMiAzMS4yNDMwNDE5OSA4NS42MDA2OTgyNCAzMi4xNzM1ODM5OCA4Ni4xNjc3MjQ2MSAzMy4xMzIzMjQyMiBDODYuNzAyNzY2MTEgMzQuMDMzNTQwMDQgODcuMjM3ODA3NjIgMzQuOTM0NzU1ODYgODcuNzg5MDYyNSAzNS44NjMyODEyNSBDODguNTYyOTgzNCAzNy4xODEyNjcwOSA4OC41NjI5ODM0IDM3LjE4MTI2NzA5IDg5LjM1MjUzOTA2IDM4LjUyNTg3ODkxIEM5MC44MTQ5NzQ2MyA0MC45Nzk5OTMzMSA5MC44MTQ5NzQ2MyA0MC45Nzk5OTMzMSA5Mi40MjA4OTg0NCA0My4wOTUyMTQ4NCBDOTUuNzcxMTg3MzMgNDcuNzA2Nzc1MzYgOTYuMDk1MTQ1MSA1MC40MzkxMTg2NyA5NS4zOTMwOTY5MiA1Ni4wMTU5MTQ5MiBDOTQuMzY0OTUxMzUgNjEuOTM3NzI5NDMgOTIuNzkzMDk2ODMgNjcuNzE5NjIwNTUgOTEuMjM0Mzc1IDczLjUxOTUzMTI1IEM5MC44NjYxNzI5MyA3NC45MDg4NjgyOCA5MC40OTg0NDU1IDc2LjI5ODMzMTE3IDkwLjEzMTE2NDU1IDc3LjY4NzkxMTk5IEM4OS4zNjI3NzMxMiA4MC41ODc5NzMzMyA4OC41ODg5MjM1OSA4My40ODY1MDUyOSA4Ny44MTEwMzUxNiA4Ni4zODQwMzMyIEM4Ni44MjQ4ODEzMyA5MC4wNTg5MjM0MSA4NS44NTIwOTA1NyA5My43MzcxOTA1IDg0Ljg4MzQxOTA0IDk3LjQxNjcyMjMgQzg0LjEyNjgzMzMgMTAwLjI4NDY5OTUgODMuMzYzMTk0MTggMTAzLjE1MDc2Mzk2IDgyLjU5NzU0MTgxIDEwNi4wMTYzMzI2MyBDODIuMjM2NzIxIDEwNy4zNjk4NjgwOCA4MS44Nzc5MzY0NCAxMDguNzIzOTQ4MzcgODEuNTIxNDE1NzEgMTEwLjA3ODYyMjgyIEM3NC4zMzQwNTYzNSAxMzcuMzI0NjMxMDQgNzQuMzM0MDU2MzUgMTM3LjMyNDYzMTA0IDY2Ljg3NSAxNDMgQzYxLjQ1NDMwNTU2IDE0NS45OTc1MzYzMyA1Ni4xMTA5MTg3MSAxNDcuOTIzODM5ODEgNDkuODc1IDE0NyBDMzguOTU2NTIxOTEgMTQzLjM4ODk5NjQ4IDM0LjI3NDYwNzE4IDEzMy42ODg3NTQ5IDI4LjkzNzUgMTI0LjE4NzUgQzI3Ljk0NjI3MDIgMTIyLjQ0NjIzMzQ5IDI2Ljk1NTAyODk0IDEyMC43MDQ5NzMzOCAyNS45NjMwODg5OSAxMTguOTY0MTExMzMgQzI0LjkzOTU2NTIyIDExNy4xNjU2ODI3MyAyMy45MTkyMzk1NiAxMTUuMzY1NDY5MyAyMi44OTk0MTQwNiAxMTMuNTY0OTQxNDEgQzE5LjczNDczMzkxIDEwNy45ODM4MzQxMiAxNi41MjE4OTA5MSAxMDIuNDMwNDczNzEgMTMuMzEyNSA5Ni44NzUgQzEyLjY5MTg5Njk3IDk1Ljc5ODg3NDUxIDEyLjA3MTI5Mzk1IDk0LjcyMjc0OTAyIDExLjQzMTg4NDc3IDkzLjYxNDAxMzY3IEM3LjI2Nzc3Nzc1IDg2LjM5NjY5ODUxIDMuMDc4NTkwMjkgNzkuMTk0Mzc4MzUgLTEuMTI1IDcyIEMtNi4xNjg2MTc5OSA2My4zNjcyNjYzIC0xMS4xODg1NDA0NiA1NC43MjExNDkyNSAtMTYuMTg3NSA0Ni4wNjI1IEMtMTYuODA2ODk0NTMgNDQuOTkwNjQ0NTMgLTE3LjQyNjI4OTA2IDQzLjkxODc4OTA2IC0xOC4wNjQ0NTMxMiA0Mi44MTQ0NTMxMiBDLTE5LjIyNDg1NTc3IDQwLjgwMjQ5NTQzIC0yMC4zODE2Mjc4IDM4Ljc4ODQzNzkzIC0yMS41MzQxNzk2OSAzNi43NzE5NzI2NiBDLTIyLjU1ODAzMTUyIDM0Ljk4NzkzMTI3IC0yMy41OTQyMjAyMyAzMy4yMTA4ODQyOSAtMjQuNjQ1NTA3ODEgMzEuNDQyODcxMDkgQy0yOC4xNzQ4MzIxMyAyNS4zOTg4NzE4NCAtMjkuMzQxMDMxNDEgMjEuMDIyNTgxMzggLTI4LjEyNSAxNCBDLTI1Ljk4NDk4ODAxIDcuMTg0MDYxOCAtMjEuOTY4MTA5OTEgMy4zNTY2Njg1IC0xNS43NDIxODc1IDAuMDMxMjUgQy0xMC4zMjcxMDQzNyAtMi4xMDI0NTQ0IC01LjUwMzI0NjEyIC0xLjU5ODA1ODAxIDAgMCBaICIgZmlsbD0iI0U1NDEzMyIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjE1LjEyNSwyNDcpIi8+CjxwYXRoIGQ9Ik0wIDAgQzQuMjAzMDU4NTUgMy4yMDIzMzAzMiA4LjI0MDc5MzE1IDcuMjMxNTg2MzEgMTAuNjI1IDEyIEMxMS42OTQwNDA4NiAyMi42MTcyNzAzMSA5LjIyNDQzNjc1IDMxLjk3OTYyMTA0IDYuNDE3OTY4NzUgNDIuMDc0MjE4NzUgQzUuOTc1Mjc5NTggNDMuNzEzNzg3NDEgNS41MzQwOTExNSA0NS4zNTM3NjE5IDUuMDk0Mjk5MzIgNDYuOTk0MTEwMTEgQzMuOTI1NjkxMjIgNTEuMzM3NjIwODQgMi43Mzc4NDY2NSA1NS42NzU2MzcyMSAxLjU0NTcyNjc4IDYwLjAxMjc0NDkgQzAuMzE5Njg0OTQgNjQuNDg1MjUxNTcgLTAuODg5NDUxMDkgNjguOTYyMzE3NTggLTIuMDk5MzY1MjMgNzMuNDM5MjA4OTggQy0zLjUzNTQ1NTkgNzguNzUwMjMyMzIgLTQuOTcyNTM5MjYgODQuMDYwOTYzOTcgLTYuNDE3NDk1NzMgODkuMzY5NTgzMTMgQy05LjAzOTQ4MjMgOTkuMDA4Mzk3OTQgLTExLjYxMTc1NjMgMTA4LjY1NTkwOTg0IC0xNC4wNzgxMjUgMTE4LjMzNTkzNzUgQy0xNC4zMzQ4MjQ2OCAxMTkuMzM5Nzk5OTYgLTE0LjU5MTUyNDM1IDEyMC4zNDM2NjI0MSAtMTQuODU2MDAyODEgMTIxLjM3Nzk0NDk1IEMtMTUuNzY4NjkxMDcgMTI0Ljk1Mjc2ODYyIC0xNi42ODAzMDQ0NiAxMjguNTI3Njc2NTMgLTE3LjU3MDIyMDk1IDEzMi4xMDgyNDU4NSBDLTE4LjE0MjYxNzYyIDEzNC40MDkzNzY2MyAtMTguNzI4MTU0NDIgMTM2LjcwNjc4NzczIC0xOS4zMTY0MDYyNSAxMzkuMDAzOTA2MjUgQy0xOS42MjI2MzkxNiAxNDAuMjI5MjQwNzIgLTE5LjkyODg3MjA3IDE0MS40NTQ1NzUyIC0yMC4yNDQzODQ3NyAxNDIuNzE3MDQxMDIgQy0yMi40NTE0MzI4MyAxNDkuMTI1NjI5OTMgLTI2LjA4MTE5OTg2IDE1My4wNTc4MDg0MSAtMzEuMzc1IDE1NyBDLTM3LjUxMzg2MzYgMTU5LjA0NjI4Nzg3IC00NC44NzUxNjc2NSAxNTkuMTA1NzE5NjUgLTUwLjgxMjUgMTU2LjM3NSBDLTU1LjUyNjgwMzUxIDE1My41OTE1MDI3MSAtNTguMzk5Mzc5NzEgMTUwLjEzNzA3MzAyIC02MC42ODc1IDE0NS4xMjUgQy02Mi4yNjc5MTYxMyAxMzcuOTQxMjkwMyAtNjEuMDk2OTQ4MDkgMTMxLjc4NjAzMjc2IC01OS4yMDcwMzEyNSAxMjQuODMxMjk4ODMgQy01OC45NzYwNDIzMyAxMjMuOTUwMTIzOSAtNTguNzQ1MDUzNDEgMTIzLjA2ODk0ODk3IC01OC41MDcwNjQ4MiAxMjIuMTYxMDcxNzggQy01Ny43NDMyODQ1IDExOS4yNTcxNDc0MSAtNTYuOTY1NTM5NSAxMTYuMzU3MTY0NjkgLTU2LjE4NzUgMTEzLjQ1NzAzMTI1IEMtNTUuNjQ1MzQyMjQgMTExLjQwODIzMDg1IC01NS4xMDQwMTYzMiAxMDkuMzU5MjEwMTcgLTU0LjU2MzQ3NjU2IDEwNy4zMDk5ODIzIEMtNTMuMTM1MjE2NDMgMTAxLjkwNTE3MzI3IC01MS42OTQ4OTk2NCA5Ni41MDM2NDY0NyAtNTAuMjUyMjU4MyA5MS4xMDI2NjExMyBDLTQ4LjgxNTIzNjY3IDg1LjcxMzEwNTE1IC00Ny4zOTA3ODc3NCA4MC4zMjAyMjk1MyAtNDUuOTY0ODQzNzUgNzQuOTI3NzM0MzggQy00My41MjAxNjIyNCA2NS42ODk0ODc3MyAtNDEuMDU1NDUzNDkgNTYuNDU2NzcwMjIgLTM4LjU3NjIxNzY1IDQ3LjIyNzczOTMzIEMtMzcuMjA1ODk5NTggNDIuMTIxNjA0MDkgLTM1Ljg1MDMzNjk3IDM3LjAxMjEzNzI5IC0zNC41MTg3Mzc3OSAzMS44OTU3NjgxNyBDLTMzLjk3NDE5MjMxIDI5LjgwODc2ODkxIC0zMy40MjM1NTAwOCAyNy43MjM0OTc5MyAtMzIuODcwMTE3MTkgMjUuNjM4ODM5NzIgQy0zMi4yMzQ1NjI2NCAyMy4yNDI0NjEwOSAtMzEuNjA5MTcxMDkgMjAuODQzMzQ4NTggLTMwLjk5NzA3MDMxIDE4LjQ0MDg3MjE5IEMtMjguOTYzNjI0MDcgMTAuODcyMjQwOTIgLTI2LjU5OTQ2NDgzIDUuNjE5ODc3NjcgLTIwLjM3NSAwLjU2MjUgQy0xNC4yNjQ1MDI5MyAtMi41NTMxODIwMiAtNi4zODc3OTgzNyAtMS44OTI2ODEgMCAwIFogIiBmaWxsPSIjNDE4M0YwIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg0MDQuMzc1LDE5MikiLz4KPHBhdGggZD0iTTAgMCBDOC43ODYxNjI1OCAzLjc1MDYxNDg1IDE1LjQyMzg3MTQ2IDE0LjUzMzkyODQ1IDE5Ljc1IDIyLjgxMjUgQzIwLjM4MDM1MTU2IDI0LjYwMTA3NDIyIDIwLjM4MDM1MTU2IDI0LjYwMTA3NDIyIDIxLjAyMzQzNzUgMjYuNDI1NzgxMjUgQzIyLjkzNzAxNzI5IDMxLjY2MTk5Mjk1IDI1Ljc5OTU2NDE4IDM2LjI1MTk1MTI3IDI4LjY4NzUgNDEgQzI5Ljg0NTY0MjE2IDQyLjk0MzY1ODkzIDMxLjAwMzE3ODM4IDQ0Ljg4NzY3OTA0IDMyLjE2MDE1NjI1IDQ2LjgzMjAzMTI1IEMzMy45NDM2ODg5NiA0OS44MTI2OTY0MSAzNS43MzQ4NTU5IDUyLjc4NzcyMzYxIDM3LjU0NjM4NjcyIDU1Ljc1MTQ2NDg0IEMzOS4yNTc0MzQ4OSA1OC41NTI5NTY1NyA0MC45NDI1NDkyMiA2MS4zNjg3Njk5OCA0Mi42MjUgNjQuMTg3NSBDNDMuMTU0NzI0MTIgNjUuMDM1OTQ0ODIgNDMuNjg0NDQ4MjQgNjUuODg0Mzg5NjUgNDQuMjMwMjI0NjEgNjYuNzU4NTQ0OTIgQzQ2Ljc4MjU0NzUxIDcxLjA3NjkwMTU5IDQ4LjUwNjM5ODU2IDc0LjI3NzM0NjkgNDcuNDA3MjI2NTYgNzkuNDMyMTI4OTEgQzQ3LjE5MDM0MTggODAuMjE3NjUxMzcgNDYuOTczNDU3MDMgODEuMDAzMTczODMgNDYuNzUgODEuODEyNSBDNDYuNDY4NjYyMTEgODIuOTAzNTMwMjcgNDYuMTg3MzI0MjIgODMuOTk0NTYwNTUgNDUuODk3NDYwOTQgODUuMTE4NjUyMzQgQzQ0LjY4Mjk3NjQ0IDg5LjcwMzA2MzE1IDQzLjQxMTE2MjA1IDk0LjI2OTY4NzQ5IDQyLjExMzAzNzExIDk4LjgzMTA1NDY5IEMzOC4wMDcxMjM4OSAxMTIuOTUzOTU1MDIgMzguMDA3MTIzODkgMTEyLjk1Mzk1NTAyIDQxLjU0Njg3NSAxMjYuODMyMDMxMjUgQzQ0LjI0MTY5NTEyIDEzMS4yNjc5ODUxNCA0Ny45ODMxODA1NyAxMzMuMTgyMjg5MDMgNTIuNzUgMTM0LjgxMjUgQzYwLjIyNjYwMTEgMTM1LjY4ODUwNTAzIDY1LjYyNTI1MzE2IDEzNS4yNDMxNjc5MyA3MS43NSAxMzAuODEyNSBDNzIuNzQgMTMwLjE1MjUgNzMuNzMgMTI5LjQ5MjUgNzQuNzUgMTI4LjgxMjUgQzczLjEwNjk0MjA5IDEzNi4zNjAyOTcyNiA3MC4wNjU1OTUxNyAxNDAuNDEwMzQyNTcgNjMuNzUgMTQ0LjgxMjUgQzU5LjM5MTk4ODE3IDE0Ny4zODI2MDk1NCA1NC42ODY0NDgyMSAxNDcuNDY0NjM5NDggNDkuNzUgMTQ2LjgxMjUgQzM5LjA3ODA4MTYgMTQzLjU3MjExNzUxIDM0LjI4MDc1MTk5IDEzMy43MTAwNDAyNCAyOS4yMDM1NTIyNSAxMjQuNTc3MjcwNTEgQzI3LjQ1NDY2NjI3IDEyMS40MzIwNzAyNyAyNS42ODAwMjE0NyAxMTguMzAxMzk0NTUgMjMuOTEwMTU2MjUgMTE1LjE2Nzk2ODc1IEMyMy4zNzg1Mzg4MiAxMTQuMjI0MDg3OTggMjMuMzc4NTM4ODIgMTE0LjIyNDA4Nzk4IDIyLjgzNjE4MTY0IDExMy4yNjExMzg5MiBDMTkuNjcyNjU3MTggMTA3LjY1MDk5MTM0IDE2LjQxNzgyMjcyIDEwMi4wOTc3MzM5OCAxMy4xMjUgOTYuNTYyNSBDNy45MDExNTg1MSA4Ny43Njk5ODQyOCAyLjczMjUwNTExIDc4Ljk0NjczNDg3IC0yLjQwNjczODI4IDcwLjEwNDQ5MjE5IEMtNS4wMzUzOTA2OSA2NS41ODY5MDg2NSAtNy42ODA2NzY1NiA2MS4wODE5MDI2MiAtMTAuMzc4OTA2MjUgNTYuNjA1NDY4NzUgQy0xMy4zMTg0MjU0NyA1MS43MjIyMjIwNiAtMTYuMTM5Mzk0NTkgNDYuNzgxMTg4ODIgLTE4LjkwMjA5OTYxIDQxLjc5NjE0MjU4IEMtMjAuNjAxNjUxNjQgMzguNzMxNzgyNDYgLTIyLjMxNTIwNjI2IDM1LjcwNzE1NjU1IC0yNC4xNjAxNTYyNSAzMi43MjY1NjI1IEMtMjcuOTc1OTQ2MzIgMjYuNDMwMDU3ODQgLTI5LjczODY1MTk0IDIxLjE4ODYwMjQ1IC0yOC4yNSAxMy44MTI1IEMtMjMuNDI2MzY2NCAxLjg2NTM1Njg2IC0xMi4yOTk0MDg0OSAtNC4wOTk4MDI4MyAwIDAgWiAiIGZpbGw9IiMxNTg2MTAiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDMwNS4yNSwyMTQuMTg3NSkiLz4KPHBhdGggZD0iTTAgMCBDMy4wNjc2NjYwOSAyLjk2NzU5NTExIDUuMDA3Mzk5NDIgNS41NTU3NTU4OCA2LjkzNzUgOS4zNzUgQzEwLjMwNDE0NzA5IDE1LjgwODg3NDM2IDEzLjkyMjgxMDQ3IDIyLjA2NTk5ODgxIDE3LjYyNSAyOC4zMTI1IEMxOC4xNzUzNDkxMiAyOS4yNDMwNDE5OSAxOC43MjU2OTgyNCAzMC4xNzM1ODM5OCAxOS4yOTI3MjQ2MSAzMS4xMzIzMjQyMiBDMjAuMDk1Mjg2ODcgMzIuNDg0MTQ3OTUgMjAuMDk1Mjg2ODcgMzIuNDg0MTQ3OTUgMjAuOTE0MDYyNSAzMy44NjMyODEyNSBDMjEuNjg3OTgzNCAzNS4xODEyNjcwOSAyMS42ODc5ODM0IDM1LjE4MTI2NzA5IDIyLjQ3NzUzOTA2IDM2LjUyNTg3ODkxIEMyMy45Mzk5NzQ2MyAzOC45Nzk5OTMzMSAyMy45Mzk5NzQ2MyAzOC45Nzk5OTMzMSAyNS41NDU4OTg0NCA0MS4wOTUyMTQ4NCBDMjguODkzMDQ2NDMgNDUuNzAyNDUyMDIgMjkuMjIxNjg5MzkgNDguNDMxMDU3ODkgMjguNTIwMzI0NzEgNTQuMDAyNTQ4MjIgQzI3LjQ3OTUyNDM1IDU5Ljk5ODMyMTMxIDI1Ljg5NDg2NzU0IDY1Ljg1NTk2ODE0IDI0LjMyNDIxODc1IDcxLjczMDQ2ODc1IEMyMy45NTM3MDM4NSA3My4xMzQyMDE4OCAyMy41ODM1Nzg2NSA3NC41MzgwMzc5MyAyMy4yMTM4MjE0MSA3NS45NDE5NzA4MyBDMjIuNDQxMzkzNjQgNzguODY3MjQ4NDEgMjEuNjYzMjQxNjQgODEuNzkwOTI3NCAyMC44ODExMDM1MiA4NC43MTM2MjMwNSBDMTkuODgzOTAyNjQgODguNDQyNDI0NTggMTguOTAyODc0NTUgOTIuMTc1MjY0NzkgMTcuOTI2Mjg3NjUgOTUuOTA5NTEwNjEgQzE3LjE2NzIzOTQgOTguODAzNDU3NTYgMTYuMzk4ODAzNiAxMDEuNjk0ODQ5ODYgMTUuNjI3NjY0NTcgMTA0LjU4NTU5NjA4IEMxNS4yNjIyMjczMSAxMDUuOTYwNTc1MzkgMTQuODk5ODM4NDkgMTA3LjMzNjM2ODk2IDE0LjU0MDY4NTY1IDEwOC43MTMwMDMxNiBDOS42NjgyMjY2MSAxMjcuMzM5ODkxMjMgOS42NjgyMjY2MSAxMjcuMzM5ODkxMjMgMC42Mjg5MDYyNSAxMzIuODk0NTMxMjUgQy00LjkwNTgyNjIgMTM1LjIyMTkxNTAzIC0xMC42NjQ0MjQ2MSAxMzQuOTkwNzY0OTcgLTE2LjM2NzE4NzUgMTMzLjI5Njg3NSBDLTIyLjM0Njg2OTMzIDEzMC42MzQyMjQyMiAtMjUuOTI0MTA0NzkgMTI2Ljc2NjU4NzY5IC0yOC4zMTI1IDEyMC42MjUgQy0yOS42MDkxNDgyOCAxMTMuNzg4MTI3MjYgLTI5LjA0NDMwMzIyIDEwNy45Njk3MTY4NyAtMjcuMTk5MjE4NzUgMTAxLjMxNTkxNzk3IEMtMjYuOTExMjU2NzkgMTAwLjIzMDY1MDcxIC0yNi45MTEyNTY3OSAxMDAuMjMwNjUwNzEgLTI2LjYxNzQ3NzQyIDk5LjEyMzQ1ODg2IEMtMjUuOTgzNTQ4MTggOTYuNzQzNzM5MjcgLTI1LjMzNTYxNDE3IDk0LjM2ODA3OTI0IC0yNC42ODc1IDkxLjk5MjE4NzUgQy0yNC4yMzQ5NjQ1NyA5MC4zMDQ1MjUyMyAtMjMuNzgzMzIyMTQgODguNjE2NjIzMjggLTIzLjMzMjUxOTUzIDg2LjkyODQ5NzMxIEMtMjIuMTQwOTYxMDEgODIuNDc1OTE0MTggLTIwLjkzNzU0MzE0IDc4LjAyNjYyMTk0IC0xOS43MzE1MDYzNSA3My41Nzc5NDE4OSBDLTE4LjUzNjcyODg0IDY5LjE2MzE5NjY1IC0xNy4zNTI2ODM1MiA2NC43NDU1NzkxMyAtMTYuMTY3OTY4NzUgNjAuMzI4MTI1IEMtMTQuMzI2OTk2MzQgNTMuNDY4MjY3NzcgLTEyLjQ4MDE4NTMzIDQ2LjYxMDAxMjE3IC0xMC42Mjg5MDYyNSAzOS43NTI5Mjk2OSBDLTguMTczMTcwNzUgMzAuNjU0ODkxMTYgLTUuNzM3ODE2OCAyMS41NTE1MDI3MiAtMy4zMTI1IDEyLjQ0NTMxMjUgQy0yLjk3MzMxNTQzIDExLjE3MTg2OTgxIC0yLjYzNDEzMDg2IDkuODk4NDI3MTIgLTIuMjg0NjY3OTcgOC41ODYzOTUyNiBDLTEuNTIyNzE5MTIgNS43MjQzNjc3OSAtMC43NjExMDkzNiAyLjg2MjI1MDgyIDAgMCBaICIgZmlsbD0iI0UzQjk2MCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjgyLDI0OSkiLz4KPHBhdGggZD0iTTAgMCBDMS4zMTQ4Mzg3MSAtMC4wMDYzNzk4NSAyLjYyOTY3NzQzIC0wLjAxMjc1OTcgMy45ODQzNTk3NCAtMC4wMTkzMzI4OSBDNS40MzEwNjA0MiAtMC4wMjA4NjE0NCA2Ljg3Nzc2MTU5IC0wLjAyMTk3NTQ2IDguMzI0NDYyODkgLTAuMDIyNzA1MDggQzkuNzk3OTc5MDYgLTAuMDI1OTE1OTMgMTEuMjcxNDk0OSAtMC4wMjkyNzk4NiAxMi43NDUwMTAzOCAtMC4wMzI3OTExNCBDMTUuODM3ODI2OTQgLTAuMDM4Nzg4ODUgMTguOTMwNjE1NTMgLTAuMDQwNjMwMzkgMjIuMDIzNDM3NSAtMC4wNDAwMzkwNiBDMjUuOTkyNzU2ODIgLTAuMDM5OTM3NDEgMjkuOTYxODk3MzYgLTAuMDUzNTg5NTMgMzMuOTMxMTc0MjggLTAuMDcwODExMjcgQzM2Ljk3NTcyMTUzIC0wLjA4MTkxMjY5IDQwLjAyMDIyNTMxIC0wLjA4Mzk1ODg0IDQzLjA2NDc5MDczIC0wLjA4MzQyOTM0IEM0NC41Mjg0NjQ1NSAtMC4wODQ2MTIyNyA0NS45OTIxMzkzOSAtMC4wODkwNTE0OSA0Ny40NTU3OTMzOCAtMC4wOTY3NjE3IEM0OS41MDA0NTM1NiAtMC4xMDY1MjM1MyA1MS41NDUxNjU4NCAtMC4xMDI0MjkyMSA1My41ODk4NDM3NSAtMC4wOTc2NTYyNSBDNTUuMzM3MzgxOTcgLTAuMDk5NzkzNzggNTUuMzM3MzgxOTcgLTAuMDk5NzkzNzggNTcuMTIwMjI0IC0wLjEwMTk3NDQ5IEM1OS44NTk2MTkxNCAwLjE0NTI2MzY3IDU5Ljg1OTYxOTE0IDAuMTQ1MjYzNjcgNjEuODU5NjE5MTQgMi4xNDUyNjM2NyBDNjIuMTIwMzE1NTUgNC40OTE1NjE4OSA2Mi4xMjAzMTU1NSA0LjQ5MTU2MTg5IDYyLjEzNDI3NzM0IDcuNDY1MzMyMDMgQzYyLjE0MzgwOTM2IDguNTc2NjYgNjIuMTUzMzQxMzcgOS42ODc5ODc5OCA2Mi4xNjMxNjIyMyAxMC44MzI5OTI1NSBDNjIuMTYyMjUwODIgMTIuMDM4MTkwNDYgNjIuMTYxMzM5NDIgMTMuMjQzMzg4MzcgNjIuMTYwNDAwMzkgMTQuNDg1MTA3NDIgQzYyLjE2NDY4NTUyIDE1LjcxODE0MTAyIDYyLjE2ODk3MDY0IDE2Ljk1MTE3NDYyIDYyLjE3MzM4NTYyIDE4LjIyMTU3Mjg4IEM2Mi4xODA2MTMzOSAyMS41MDM1MTA3OCA2Mi4xNzc0OTQyOSAyNC43ODUyNjYyNSA2Mi4xNzE4MTM5NiAyOC4wNjcxOTk3MSBDNjIuMTcyMTE4NjEgMzAuMDc5MjU2NzQgNjIuMTgyMTUzNjIgMzIuMDkxMDE5MzEgNjIuMTk1ODAwNzggMzQuMTAzMDI3MzQgQzYyLjIyMDIyOTU5IDM3Ljk1OTY5NTYxIDYyLjIyNDQ1ODQzIDQxLjgxNTg3MTYxIDYyLjIyMjkwMDM5IDQ1LjY3MjYwNzQyIEM2Mi4yMzIxMTAxNCA0Ni44NzU3ODExIDYyLjI0MTMxOTg5IDQ4LjA3ODk1NDc3IDYyLjI1MDgwODcyIDQ5LjMxODU4ODI2IEM2Mi4yNDQ1Nzk5MyA1MC40MzMwNjgzOSA2Mi4yMzgzNTExNCA1MS41NDc1NDg1MiA2Mi4yMzE5MzM1OSA1Mi42OTU4MDA3OCBDNjIuMjMyNTYzMDIgNTMuNjc3OTQwNTIgNjIuMjMzMTkyNDQgNTQuNjYwMDgwMjYgNjIuMjMzODQwOTQgNTUuNjcxOTgxODEgQzYxLjg1OTYxOTE0IDU4LjE0NTI2MzY3IDYxLjg1OTYxOTE0IDU4LjE0NTI2MzY3IDYwLjcyMjgzOTM2IDU5Ljk2MTU5MzYzIEM1OC4wMDk1ODcxNCA2MS42ODUyNzM2IDU1Ljg3NjA2MjIzIDYxLjUyNjY1MzEzIDUyLjY3NTc4MTI1IDYxLjUzMzQ0NzI3IEM1MS40MDExMzUxIDYxLjU0MjkwMzc1IDUwLjEyNjQ4ODk1IDYxLjU1MjM2MDIzIDQ4LjgxMzIxNzE2IDYxLjU2MjEwMzI3IEM0Ny40MjExMjkyNSA2MS41NTY3MzQxNiA0Ni4wMjkwNDQxNiA2MS41NTA1ODEzNSA0NC42MzY5NjI4OSA2MS41NDM3MDExNyBDNDMuMjExMTQ0NTIgNjEuNTQ1NzIxODYgNDEuNzg1MzI3MTYgNjEuNTQ4NjMzMjUgNDAuMzU5NTEyMzMgNjEuNTUyMzk4NjggQzM3LjM3MjcxMjcxIDYxLjU1NjgyMDkyIDM0LjM4NjE4MjM3IDYxLjU1MDM5MzU3IDMxLjM5OTQxNDA2IDYxLjUzNjM3Njk1IEMyNy41NjY3NzA4MSA2MS41MTkyNjkyMSAyMy43MzQ3NTcwNSA2MS41MjkxMzYzMiAxOS45MDIxMzY4IDYxLjU0NzA5NDM1IEMxNi45NTg3NzgyMiA2MS41NTc5MjE5IDE0LjAxNTU2OTUzIDYxLjU1NDQ5MDk0IDExLjA3MjIwNjUgNjEuNTQ2NzEwOTcgQzkuNjU4Nzc3NzUgNjEuNTQ0NzA2OSA4LjI0NTMzNTQ5IDYxLjU0NzE3NTUxIDYuODMxOTIyNTMgNjEuNTU0MTQ5NjMgQzQuODU5MzA1MDggNjEuNTYxNzQ4MDEgMi44ODY2NDAwMyA2MS41NDgxMTc5MiAwLjkxNDA2MjUgNjEuNTMzNDQ3MjcgQy0wLjIwOTQwMDc5IDYxLjUzMTA2MDQ5IC0xLjMzMjg2NDA3IDYxLjUyODY3MzcxIC0yLjQ5MDM3MTcgNjEuNTI2MjE0NiBDLTMuMzY0ODc0NzMgNjEuNDAwNTAwNzkgLTQuMjM5Mzc3NzUgNjEuMjc0Nzg2OTkgLTUuMTQwMzgwODYgNjEuMTQ1MjYzNjcgQy03LjQwNjQwNzMyIDU3Ljc0NjIyMzk3IC03LjM4ODk2MzM5IDU2LjU3MzQ1MTY2IC03LjM4MzMwMDc4IDUyLjU4ODEzNDc3IEMtNy4zODYzNzc0MSA1MS40NTA0MDYxOSAtNy4zODk0NTQwNCA1MC4zMTI2Nzc2MSAtNy4zOTI2MjM5IDQ5LjE0MDQ3MjQxIEMtNy4zODE4NDU2MyA0Ny4yOTgxOTU2NSAtNy4zODE4NDU2MyA0Ny4yOTgxOTU2NSAtNy4zNzA4NDk2MSA0NS40MTg3MDExNyBDLTcuMzcwMzkxMzkgNDQuMTYwMTQzMTMgLTcuMzY5OTMzMTcgNDIuOTAxNTg1MDggLTcuMzY5NDYxMDYgNDEuNjA0ODg4OTIgQy03LjM2NjQzODA4IDM4Ljk0MzQwNTMyIC03LjM1OTYyMDY5IDM2LjI4MjI2NzYgLTcuMzQ2MTkxNDEgMzMuNjIwODQ5NjEgQy03LjMyOTE2NzE5IDMwLjIwMzA1OTY0IC03LjMyNTM3ODE0IDI2Ljc4NTQxNzM2IC03LjMyNjEzNjU5IDIzLjM2NzU4OTk1IEMtNy4zMjU4MDAwMyAyMC4xMTM3Nzg5OSAtNy4zMTY5Njc3NSAxNi44NTk5OTkyMyAtNy4zMDgzNDk2MSAxMy42MDYyMDExNyBDLTcuMzA3MjM2NzkgMTIuMzczOTY4MiAtNy4zMDYxMjM5NiAxMS4xNDE3MzUyMyAtNy4zMDQ5Nzc0MiA5Ljg3MjE2MTg3IEMtNy4yOTg1OTc1NiA4Ljc0MDczNzYxIC03LjI5MjIxNzcxIDcuNjA5MzEzMzUgLTcuMjg1NjQ0NTMgNi40NDM2MDM1MiBDLTcuMjgxODMyNzMgNS40NDIyNzM4NiAtNy4yNzgwMjA5NCA0LjQ0MDk0NDIxIC03LjI3NDA5MzYzIDMuNDA5MjcxMjQgQy03LjAwMzU3NTM3IC0xLjE3MTEwOTQ4IC0zLjkyNTQ3NDU4IDAuMDEyODUyMzcgMCAwIFogIiBmaWxsPSIjRjJGQkY0IiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyOTAuMTQwMzgwODU5Mzc1LDUzMC44NTQ3MzYzMjgxMjUpIi8+CjxwYXRoIGQ9Ik0wIDAgQzEuMTY1MDI1NDggMC4wMDE0MjUwMiAyLjMzMDA1MDk2IDAuMDAyODUwMDQgMy41MzAzODAyNSAwLjAwNDMxODI0IEM0Ljg0ODM3MTEyIDAuMDAxMjQxNjEgNi4xNjYzNjIgLTAuMDAxODM1MDIgNy41MjQyOTE5OSAtMC4wMDUwMDQ4OCBDOC45Njg5NTAxMyAwLjAwMTg5MjM1IDEwLjQxMzYwNjU1IDAuMDA5MTU5MjggMTEuODU4MjYxMTEgMC4wMTY3Njk0MSBDMTMuMzMyNzQyOTIgMC4wMTc5NjEwOCAxNC44MDcyMjU0OSAwLjAxODQxNDQgMTYuMjgxNzA3NzYgMC4wMTgxNTc5NiBDMTkuMzcyNzg0OTEgMC4wMTk3MjMxNiAyMi40NjM3NDYyOSAwLjAyODAxNjMgMjUuNTU0Nzk0MzEgMC4wNDE0Mjc2MSBDMjkuNTI1MjYyMzkgMC4wNTg0MzI0MSAzMy40OTU2MDMzMyAwLjA2MjI0MTU2IDM3LjQ2NjEwMzU1IDAuMDYxNDgyNDMgQzQwLjUxMDYxMjIxIDAuMDYxNzUzNzggNDMuNTU1MDkyODUgMC4wNjcyMjkwNyA0Ni41OTk1OTIyMSAwLjA3NDQ4Mzg3IEM0OC4wNjQwODQxMiAwLjA3NzY3NTA2IDQ5LjUyODU3OTIyIDAuMDc5NjM4OTkgNTAuOTkzMDc0NDIgMC4wODAzNzc1OCBDNTMuMDM1NDY5MTYgMC4wODI1MzU1MyA1NS4wNzc4NTIxNiAwLjA5MjA2NDUgNTcuMTIwMjI0IDAuMTAxOTc0NDkgQzU4Ljg2NjU2ODgzIDAuMTA3NjkyMTggNTguODY2NTY4ODMgMC4xMDc2OTIxOCA2MC42NDgxOTMzNiAwLjExMzUyNTM5IEM2My4yNjA2MDQ4NiAwLjI0NzIzODE2IDYzLjI2MDYwNDg2IDAuMjQ3MjM4MTYgNjQuMjYwNjA0ODYgMS4yNDcyMzgxNiBDNjQuMzU0MzY1MzkgMy4wNTc3ODg0MSA2NC4zNzgwNDU5NiA0Ljg3MjAxMDE3IDY0LjM3NDEzMDI1IDYuNjg0OTgyMyBDNjQuMzc0MDE2OTUgOC40MjY2NzQ0MiA2NC4zNzQwMTY5NSA4LjQyNjY3NDQyIDY0LjM3MzkwMTM3IDEwLjIwMzU1MjI1IEM2NC4zNjg3NDAwOCAxMS40NjcwNzAxNiA2NC4zNjM1Nzg4IDEyLjczMDU4ODA3IDY0LjM1ODI2MTExIDE0LjAzMjM5NDQxIEM2NC4zNTY4NDYxNiAxNS4zMTgzNTAwNyA2NC4zNTU0MzEyMSAxNi42MDQzMDU3MyA2NC4zNTM5NzMzOSAxNy45MjkyMjk3NCBDNjQuMzUwMTQ5MDQgMjEuMzUzNjcyNTkgNjQuMzQwMzE5NDggMjQuNzc4MDczMjUgNjQuMzI5MjY5NDEgMjguMjAyNDk5MzkgQzY0LjMxOTA1MzUgMzEuNjk0NjIwMDUgNjQuMzE0NDc1MzggMzUuMTg2NzQ3NSA2NC4zMDk0MzI5OCAzOC42Nzg4Nzg3OCBDNjQuMjk4Njk3MTMgNDUuNTM1MDE1OTQgNjQuMjgxNjIxNyA1Mi4zOTExMjUwMyA2NC4yNjA2MDQ4NiA1OS4yNDcyMzgxNiBDNjEuMjE3ODI1MjcgNjAuMTc4Nzg5OSA1OC45NDkyNjExMSA2MC4yMzkyMDQyNiA1NS44MDc3MjQgNTkuODEzNjQ0NDEgQzQ5LjY5NTc2NDY0IDU5LjExNzgzOTE3IDQzLjY1MTc5NDc3IDU5LjEzOTQ2Nzc5IDM3LjUwNjY5ODYxIDU5LjE4NDczODE2IEMzNS43MzM2MDA2OSA1OS4xOTA0MTgwOSAzNS43MzM2MDA2OSA1OS4xOTA0MTgwOSAzMy45MjQ2ODI2MiA1OS4xOTYyMTI3NyBDMzAuMTgyNDUxNDMgNTkuMjA4MzQ2NzQgMjYuNDQwMzAwNDMgNTkuMjI2OTk4MzUgMjIuNjk4MTA0ODYgNTkuMjQ3MjM4MTYgQzE3LjczODQ3MTgzIDU5LjI3MzcyNDg1IDEyLjc3ODg3NTIyIDU5LjI5MzczMzc4IDcuODE5MTk4NjEgNTkuMzA5NzM4MTYgQzYuNjc0NTQ2MzYgNTkuMzE4MDM2NSA1LjUyOTg5NDEgNTkuMzI2MzM0ODQgNC4zNTA1NTU0MiA1OS4zMzQ4ODQ2NCBDMi43Nzc0MDMxOCA1OS4zMzk4Mzk0OCAyLjc3NzQwMzE4IDU5LjMzOTgzOTQ4IDEuMTcyNDcwMDkgNTkuMzQ0ODk0NDEgQy0wLjIxNzkxMjIyIDU5LjM1Mjc0OTYzIC0wLjIxNzkxMjIyIDU5LjM1Mjc0OTYzIC0xLjYzNjM4MzA2IDU5LjM2MDc2MzU1IEMtMy43MzkzOTUxNCA1OS4yNDcyMzgxNiAtMy43MzkzOTUxNCA1OS4yNDcyMzgxNiAtNC43MzkzOTUxNCA1OC4yNDcyMzgxNiBDLTQuODQzNDk5NDcgNTYuNTA4ODc1MjUgLTQuODc3OTMwNDEgNTQuNzY2MjkwMzkgLTQuODg0NjU4ODEgNTMuMDI0ODI2MDUgQy00Ljg5MTAzODY3IDUxLjkxMDE5NDg1IC00Ljg5NzQxODUyIDUwLjc5NTU2MzY2IC00LjkwMzk5MTcgNDkuNjQ3MTU1NzYgQy00LjkwNTEwNDUyIDQ4LjQzMzY1OTUyIC00LjkwNjIxNzM1IDQ3LjIyMDE2MzI3IC00LjkwNzM2Mzg5IDQ1Ljk2OTg5NDQxIEMtNC45MTA2OTIyOSA0NC43MzMwNzQxOSAtNC45MTQwMjA2OSA0My40OTYyNTM5NyAtNC45MTc0NDk5NSA0Mi4yMjE5NTQzNSBDLTQuOTIyNTI0NDQgMzkuNTk5OTMzNjEgLTQuOTI0ODU4MTIgMzYuOTc3OTA2MzggLTQuOTI0Njk3ODggMzQuMzU1ODgwNzQgQy00LjkyNDYxNjQzIDMxLjY2MDE3NDc0IC00LjkzMTU4MTcxIDI4Ljk2NDYzNzk3IC00Ljk0NTIwNTY5IDI2LjI2ODk2NjY3IEMtNC45NjM0NDg2IDIyLjM5ODM4OTE3IC00Ljk2ODQzMSAxOC41MjgwMTA0OSAtNC45Njk4NjM4OSAxNC42NTczOTQ0MSBDLTQuOTc3MDQ5NDEgMTMuNDQ1OTIyMzkgLTQuOTg0MjM0OTIgMTIuMjM0NDUwMzggLTQuOTkxNjM4MTggMTAuOTg2MjY3MDkgQy00Ljk4ODU2MTU1IDkuODY4NDgzNzMgLTQuOTg1NDg0OTIgOC43NTA3MDAzOCAtNC45ODIzMTUwNiA3LjU5OTA0NDggQy00Ljk4Mzc0MDA4IDYuNjExNjY4MjQgLTQuOTg1MTY1MSA1LjYyNDI5MTY5IC00Ljk4NjYzMzMgNC42MDY5OTQ2MyBDLTQuNjExMjA2NzggMS4wMjM3NDg1OSAtMy41MjIyMjI5OSAwLjMxNzg5MDU5IDAgMCBaICIgZmlsbD0iI0YxRjlGMyIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjc4LjczOTM5NTE0MTYwMTU2LDE5Ljc1Mjc2MTg0MDgyMDMxMykiLz4KPHBhdGggZD0iTTAgMCBDMjUuNzQgMCA1MS40OCAwIDc4IDAgQzc4IDI0Ljc1IDc4IDQ5LjUgNzggNzUgQzUyLjI2IDc1IDI2LjUyIDc1IDAgNzUgQzAgNTAuMjUgMCAyNS41IDAgMCBaIE0xIDEwIEMwLjg5NTgzNTI5IDExLjc2MzcwMzYyIDAuODYxNDYxOTMgMTMuNTMxNTc1NzEgMC44NTQ3MzYzMyAxNS4yOTgzMzk4NCBDMC44NDUxNjY1NSAxNi45OTU0NzYyMyAwLjg0NTE2NjU1IDE2Ljk5NTQ3NjIzIDAuODM1NDAzNDQgMTguNzI2ODk4MTkgQzAuODM0MjkwNjIgMTkuOTU5MTMxMTYgMC44MzMxNzc4IDIxLjE5MTM2NDE0IDAuODMyMDMxMjUgMjIuNDYwOTM3NSBDMC44Mjg3MDI4NSAyMy43MTc1ODIwOSAwLjgyNTM3NDQ1IDI0Ljk3NDIyNjY4IDAuODIxOTQ1MTkgMjYuMjY4OTUxNDIgQzAuODE2ODcwMTkgMjguOTMzODk0MSAwLjgxNDEwNTg5IDMxLjU5ODczNDg5IDAuODE0Njk3MjcgMzQuMjYzNjcxODggQzAuODE0Nzk4OCAzNy42NzkxMjkzNCAwLjgwMTE1ODkgNDEuMDk0Mzc4NDkgMC43ODM5MjUwNiA0NC41MDk3ODY2MSBDMC43NzAxMzEzNyA0Ny43NjQzMjkxOSAwLjc3MDcxNjE5IDUxLjAxODg2OTYzIDAuNzY5NTMxMjUgNTQuMjczNDM3NSBDMC43NjIzNDU3MyA1NS41MDE2MjIwMSAwLjc1NTE2MDIyIDU2LjcyOTgwNjUyIDAuNzQ3NzU2OTYgNTcuOTk1MjA4NzQgQzAuNzUwODMzNTkgNTkuMTMyOTM3MzIgMC43NTM5MTAyMiA2MC4yNzA2NjU4OSAwLjc1NzA4MDA4IDYxLjQ0Mjg3MTA5IEMwLjc1NTY1NTA2IDYyLjQ0NTc5MTkzIDAuNzU0MjMwMDQgNjMuNDQ4NzEyNzcgMC43NTI3NjE4NCA2NC40ODIwMjUxNSBDMC44MjQ4MTU2OSA2Ny4yNDcxODk3IDAuODI0ODE1NjkgNjcuMjQ3MTg5NyAzIDcwIEM1Ljc2NTQzNTE2IDcwLjQ2MDc0MDM1IDUuNzY1NDM1MTYgNzAuNDYwNzQwMzUgOS4wNTQ0NDMzNiA3MC4zODgxODM1OSBDMTAuMzI1OTM3MzUgNzAuMzk3NjQwMDggMTEuNTk3NDMxMzQgNzAuNDA3MDk2NTYgMTIuOTA3NDU1NDQgNzAuNDE2ODM5NiBDMTQuMzAxNTg4MDMgNzAuNDExNDY5NSAxNS42OTU3MTc3OSA3MC40MDUzMTY0NSAxNy4wODk4NDM3NSA3MC4zOTg0Mzc1IEMxOC41MTQ2OTU3MyA3MC40MDA0NTc3NyAxOS45Mzk1NDY3MSA3MC40MDMzNjg4MSAyMS4zNjQzOTUxNCA3MC40MDcxMzUwMSBDMjQuMzUyOTc0NzQgNzAuNDExNTYyMDcgMjcuMzQxMjg1NTkgNzAuNDA1MTE2MzUgMzAuMzI5ODMzOTggNzAuMzkxMTEzMjggQzM0LjE2MTI4NzA0IDcwLjM3NDAzNjI2IDM3Ljk5MjEwODk5IDcwLjM4Mzg1MDE0IDQxLjgyMzUzODc4IDcwLjQwMTgzMDY3IEM0NC43NjY5Mzk4MyA3MC40MTI2NzE2OCA0Ny43MTAxOTEzMiA3MC40MDkyMjA1MyA1MC42NTM1OTY4OCA3MC40MDE0NDczIEM1Mi4wNjYxOTkxMSA3MC4zOTk0NDUzNCA1My40Nzg4MTQ5IDcwLjQwMTkwNDQzIDU0Ljg5MTQwMTI5IDcwLjQwODg4NTk2IEM1Ni44NjYzMTg5MyA3MC40MTY1MDI5NyA1OC44NDEyODQxMyA3MC40MDI4MzUwMyA2MC44MTYxNjIxMSA3MC4zODgxODM1OSBDNjIuNTAyNTUwNDMgNzAuMzg0NjAzNDIgNjIuNTAyNTUwNDMgNzAuMzg0NjAzNDIgNjQuMjIzMDA3MiA3MC4zODA5NTA5MyBDNjYuOTcwMTY0NTYgNzAuMjAwNTA1OCA2Ni45NzAxNjQ1NiA3MC4yMDA1MDU4IDY4Ljg2MzIyMDIxIDY4LjgxNjMyOTk2IEM3MC40MzM1ODk4NyA2Ni4zMDcyMTY1IDcwLjM3NDIwNjk0IDY0LjUwMzUzNTU2IDcwLjM3MjMxNDQ1IDYxLjU1MDUzNzExIEM3MC4zNzg1NDMyNCA2MC40MzYwNTY5OCA3MC4zODQ3NzIwMyA1OS4zMjE1NzY4NCA3MC4zOTExODk1OCA1OC4xNzMzMjQ1OCBDNzAuMzgxOTc5ODMgNTYuOTcwMTUwOTEgNzAuMzcyNzcwMDggNTUuNzY2OTc3MjMgNzAuMzYzMjgxMjUgNTQuNTI3MzQzNzUgQzcwLjM2Mzc3OTc1IDUzLjI5MzM1MzQyIDcwLjM2NDI3ODI2IDUyLjA1OTM2MzEgNzAuMzY0NzkxODcgNTAuNzg3OTc5MTMgQzcwLjM2MTg0OTU1IDQ3LjUwODg0OTczIDcwLjM0NDgxMjA3IDQ0LjIzMDE1MjgyIDcwLjMyMjU3MDggNDAuOTUxMTEwODQgQzcwLjMxMjUwMjI2IDM4LjkzNzk1MTc4IDcwLjMxMjE4OTQ1IDM2LjkyNTA0MzgyIDcwLjMxNTY3MzgzIDM0LjkxMTg2NTIzIEM3MC4zMjIwNjg1OCAzMS4wNTQ0MDg4OSA3MC4zMTQxODY4OCAyNy4xOTcyNzczOCA3MC4zMDA3ODEyNSAyMy4zMzk4NDM3NSBDNzAuMzAxNjkyNjYgMjIuMTM0NjQ1ODQgNzAuMzAyNjA0MDYgMjAuOTI5NDQ3OTQgNzAuMzAzNTQzMDkgMTkuNjg3NzI4ODggQzcwLjI5NDAxMTA4IDE4LjU3NjQwMDkxIDcwLjI4NDQ3OTA2IDE3LjQ2NTA3Mjk0IDcwLjI3NDY1ODIgMTYuMzIwMDY4MzYgQzcwLjI3MDA1MDgxIDE1LjMzODcyNDIxIDcwLjI2NTQ0MzQyIDE0LjM1NzM4MDA3IDcwLjI2MDY5NjQxIDEzLjM0NjI5ODIyIEM3MC4yMjYxNTgyNCAxMC44MDk2OTQxMyA3MC4yMjYxNTgyNCAxMC44MDk2OTQxMyA2OCA5IEM2NS4xMzMwMTA4MiA4LjY5OTMxMTU4IDY1LjEzMzAxMDgyIDguNjk5MzExNTggNjEuNzMwMjI0NjEgOC43NTcwODAwOCBDNjAuNDEyMjMzNzMgOC43NTQwMDM0NSA1OS4wOTQyNDI4NiA4Ljc1MDkyNjgyIDU3LjczNjMxMjg3IDguNzQ3NzU2OTYgQzU2LjI5MTY1NDczIDguNzU0NjU0MTkgNTQuODQ2OTk4MzEgOC43NjE5MjExMiA1My40MDIzNDM3NSA4Ljc2OTUzMTI1IEM1MS45Mjc4NjE5NCA4Ljc3MDcyMjkyIDUwLjQ1MzM3OTM2IDguNzcxMTc2MjQgNDguOTc4ODk3MDkgOC43NzA5MTk4IEM0NS44ODc4MTk5NSA4Ljc3MjQ4NSA0Mi43OTY4NTg1NyA4Ljc4MDc3ODE0IDM5LjcwNTgxMDU1IDguNzk0MTg5NDUgQzM1LjczNTM0MjQ3IDguODExMTk0MjUgMzEuNzY1MDAxNTMgOC44MTUwMDM0IDI3Ljc5NDUwMTMgOC44MTQyNDQyNyBDMjQuNzQ5OTkyNjUgOC44MTQ1MTU2MiAyMS43MDU1MTIwMSA4LjgxOTk5MDkxIDE4LjY2MTAxMjY1IDguODI3MjQ1NzEgQzE3LjE5NjUyMDc0IDguODMwNDM2OSAxNS43MzIwMjU2NCA4LjgzMjQwMDgzIDE0LjI2NzUzMDQ0IDguODMzMTM5NDIgQzEyLjIyNTEzNTcgOC44MzUyOTczNyAxMC4xODI3NTI3IDguODQ0ODI2MzQgOC4xNDAzODA4NiA4Ljg1NDczNjMzIEM2Ljk3NjE1MDk3IDguODU4NTQ4MTMgNS44MTE5MjEwOCA4Ljg2MjM1OTkyIDQuNjEyNDExNSA4Ljg2NjI4NzIzIEMyLjA3Mjg4NDU0IDguNzAzNzY5NjcgMi4wNzI4ODQ1NCA4LjcwMzc2OTY3IDEgMTAgWiAiIGZpbGw9IiMyRUIzNDgiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI4Miw1MjIpIi8+CjxwYXRoIGQ9Ik0wIDAgQzI1LjQxIDAgNTAuODIgMCA3NyAwIEM3NyAyMy40MyA3NyA0Ni44NiA3NyA3MSBDNzQuMzYgNzAuNjcgNzEuNzIgNzAuMzQgNjkgNzAgQzY3LjY4MTQyNDUyIDY3LjM2Mjg0OTA0IDY3Ljg4MDA4Mjk2IDY1LjQwMTY3MzYgNjcuODg2NDc0NjEgNjIuNDQ4NzMwNDcgQzY3Ljg4NjU4NzkxIDYwLjcwNzE1MTY0IDY3Ljg4NjU4NzkxIDYwLjcwNzE1MTY0IDY3Ljg4NjcwMzQ5IDU4LjkzMDM4OTQgQzY3Ljg5MTg2NDc4IDU3LjY3MjAzMjc4IDY3Ljg5NzAyNjA2IDU2LjQxMzY3NjE1IDY3LjkwMjM0Mzc1IDU1LjExNzE4NzUgQzY3LjkwMzc1ODcgNTMuODMyNjQ2NzkgNjcuOTA1MTczNjUgNTIuNTQ4MTA2MDggNjcuOTA2NjMxNDcgNTEuMjI0NjM5ODkgQzY3LjkxMDQ1MDg5IDQ3LjgwODQzMTU4IDY3LjkyMDI3NjI3IDQ0LjM5MjI2NTc0IDY3LjkzMTMzNTQ1IDQwLjk3NjA3NDIyIEM2Ny45NDE1NjE5MyAzNy40OTA1NjU3NCA2Ny45NDYxMzE3NCAzNC4wMDUwNTA0IDY3Ljk1MTE3MTg4IDMwLjUxOTUzMTI1IEM2Ny45NjE4OTkwNCAyMy42Nzk2NzAwNSA2Ny45Nzg5Njg1OCAxNi44Mzk4MzcwNiA2OCAxMCBDNTkuNDI5MjEzNTMgOS45NzY4NTc4NCA1MC44NTg0NDAwNSA5Ljk1OTA3NTMzIDQyLjI4NzYzMDA4IDkuOTQ4MTg3ODMgQzM4LjMwODExNTg4IDkuOTQyOTYzMTEgMzQuMzI4NjIzMDEgOS45MzU4NzI5IDMwLjM0OTEyMTA5IDkuOTI0NTYwNTUgQzI2LjUxMDY2NzU3IDkuOTEzNzE3MDkgMjIuNjcyMjM0NiA5LjkwNzcyMDA2IDE4LjgzMzc2Njk0IDkuOTA1MTIyNzYgQzE3LjM2NzMwNTAxIDkuOTAzMjcxMTUgMTUuOTAwODQ0MjMgOS44OTk2NTU1NiAxNC40MzQzOTEwMiA5Ljg5NDI2OTk0IEMxMi4zODQ3ODM4OCA5Ljg4NzA0MDE3IDEwLjMzNTI2MjMyIDkuODg2MDA5ODggOC4yODU2NDQ1MyA5Ljg4NjQ3NDYxIEM3LjExNzYwMjg0IDkuODg0MjU0IDUuOTQ5NTYxMTYgOS44ODIwMzMzOSA0Ljc0NjEyNDI3IDkuODc5NzQ1NDggQzIuMDM3NDM5MTcgOS44MTE0MjQgMi4wMzc0MzkxNyA5LjgxMTQyNCAwIDExIEMwIDcuMzcgMCAzLjc0IDAgMCBaICIgZmlsbD0iIzJGQjI0QSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjc0LDExKSIvPgo8cGF0aCBkPSJNMCAwIEMzLjA5NjMyNjQ5IDIuNDM3NTMzNjIgNC44MjMwMDQ4NyA0LjczNDUwNzMxIDcgOCBDNy40ODI1NjM2NSAxMi4yNjI2NDU1OCA3LjI2ODczMjY3IDE0LjQ5MTMyNzQ0IDUuMjUgMTguMzEyNSBDMi4wNjU1MDE5NiAyMi4xMTYyMDU5OSAwLjUyODYwMTE0IDIyLjgzMDE1NTQzIC00LjM3NSAyMy4zNzUgQy04LjY5Mjk2NjA3IDIyLjkyODMxMzg1IC0xMC42OTMyNjU0OCAyMS43Njg0Mjg5IC0xNCAxOSBDLTE2LjU0MjQ2NDE1IDE0Ljg0NjcyODA4IC0xNi44NTUwOTMzIDEwLjc0OTU3NzYyIC0xNiA2IEMtMTEuNDMwODgwMjMgMC4yMjg0ODAyOSAtNy4xNTE2MTg1NyAtMS4xMjU5NDY4NyAwIDAgWiAiIGZpbGw9IiMwMDAyMDAiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDMxMCwyMzUpIi8+CjxwYXRoIGQ9Ik0wIDAgQzMuMDk2MzI2NDkgMi40Mzc1MzM2MiA0LjgyMzAwNDg3IDQuNzM0NTA3MzEgNyA4IEM3LjQ2MDYwNjcgMTIuOTc0NTUyMzkgNy4xNjc4MTgxMiAxNi4wNjc1MzYxMyA0IDIwIEMwLjg4MTA3MzUzIDIyLjc1MTk5Mzk0IC0xLjQ2MTk4MjEzIDIzLjIyODA2MDgxIC01LjUgMjMgQy0xMC4wMTA3MzgwNiAyMi4zMzA5MDcxOSAtMTIuMTY1ODEzMDQgMjAuNjMxMzAyMDUgLTE1IDE3IEMtMTYuNzM2MzE2MzYgMTMuNTI3MzY3MjcgLTE2LjYwMTkwNDAyIDkuNzg4MDY5ODcgLTE2IDYgQy0xMS40MzA4ODAyMyAwLjIyODQ4MDI5IC03LjE1MTYxODU3IC0xLjEyNTk0Njg3IDAgMCBaICIgZmlsbD0iIzA0MDEwMSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjIwLDI2OCkiLz4KPHBhdGggZD0iTTAgMCBDMy41NzU0NTcwMyAwLjAyMjgwOTkzIDUuNTQ0Mzg0MDQgMC40NjAwNzQzOSA4LjMxMjUgMi43NSBDMTEuNzYzMTU1NTkgNi4zNzMxODgzNyAxMi4xMDkxNDgyIDguMzI2NDEwMTUgMTIuMDI3MzQzNzUgMTMuMzQzNzUgQzExLjcwOTYwNjI0IDE2LjM0NzgxMzcyIDEwLjcyNzkyMjg1IDE4LjA2MzI4Mjc3IDguODEyNSAyMC4zNzUgQzUuOTEwNDk2MzcgMjIuNzEyNzI1MTQgNC4wODk0OTEwNiAyMy4zMzk3NDY1OSAwLjM3NSAyMy44MTI1IEMtMy44OTcxODY5MyAyMy4yODc4NDU0NiAtNS45Mzc4MTc3MSAyMi4xNzEyMzgyNSAtOS4xODc1IDE5LjM3NSBDLTExLjUwODMxMjY4IDE1Ljc0MjQyMzYzIC0xMS40NDI2OTkyIDEyLjQ0OTg1MDMyIC0xMC44MDg1OTM3NSA4LjMwODU5Mzc1IEMtOS43OTQ2NDk5MSA1LjE1MTk3NjE0IC03LjY4NjU5NjA2IDMuNDM2NzU0MjUgLTUuMTg3NSAxLjM3NSBDLTMuNjM3NjY3MzkgLTAuMTc0ODMyNjEgLTIuMTUwODE2MjIgMC4wOTM2NzAzOSAwIDAgWiAiIGZpbGw9IiMwNDAzMDEiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI3NS4xODc1LDM0Mi42MjUpIi8+CjxwYXRoIGQ9Ik0wIDAgQzMuNDU4NjA4OTkgMi4wMTc1MjE5MSA1LjkxMzA0MjQ3IDQuMDg2OTUyODkgNyA4IEM2LjgxOTI0MTQ0IDEzLjY5Mzg5NDY1IDYuMjIzMjI4NjEgMTYuODk3NDM1MDcgMiAyMSBDLTAuODE5MzM2NDMgMjMuMjE1MTkyOTEgLTIuMjQ5MzE3NjIgMjIuOTkyMDg1MTYgLTUuOTM3NSAyMi44NzUgQy05Ljg2Nzc5ODE0IDIyLjI2NjM5MDQgLTEyLjE1NzU1NzM1IDIwLjg0MjQ0MjY1IC0xNSAxOCBDLTE2LjcyMzIwMTg4IDE0LjU1MzU5NjIzIC0xNi4zNzIzNTEyIDEwLjc3NTc3MTggLTE2IDcgQy0xMi42ODUzMjA1MyAtMC40MTg1NjgzMyAtNy40MzE2MjAyNyAtMC45NzM0NzEwMyAwIDAgWiAiIGZpbGw9IiMwMTAyMDQiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDM5NiwyMTQpIi8+CjxwYXRoIGQ9Ik0wIDAgQzMuMTk0MDE4NTEgMS41MjQ0MTc5MyA1Ljc1NDE4NzM1IDMuMjYyMTI3MjcgOCA2IEM4LjgzNTU1MjMzIDEwLjA0NTQ2NTg1IDguOTM5MTgxMDEgMTQuMjYwNzc1OTEgNi45NDUzMTI1IDE3Ljk1MzEyNSBDNS4xODYxNTM4NiAyMC4wOTc0MjQ4OCAzLjQ5MTc1MDM3IDIxLjc1NDEyNDgyIDEgMjMgQy03LjcyOTc1MDE5IDIzLjQyMjQwNzI3IC03LjcyOTc1MDE5IDIzLjQyMjQwNzI3IC0xMSAyMSBDLTE0LjM2NzY2MzE3IDE3LjIwNjE1NjEzIC0xNC41NjA4NjgxMyAxNC40MTQzMTgwNyAtMTQuNDI5Njg3NSA5LjQ4MDQ2ODc1IEMtMTMuNzMyNTcyNTcgNS40NTYyMTQ0MSAtMTEuOTYwNjYyMjEgMy43NDkxODYzNCAtOSAxIEMtNS45MzU3MDIyNCAtMC41MzIxNDg4OCAtMy4zODM0MzU4IC0wLjIyOTM4NTQ4IDAgMCBaICIgZmlsbD0iIzAwMDEwMiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMzY5LDMxMCkiLz4KPHBhdGggZD0iTTAgMCBDNy45MiAwIDE1Ljg0IDAgMjQgMCBDMjQgMy4zIDI0IDYuNiAyNCAxMCBDMTYuMDggMTAgOC4xNiAxMCAwIDEwIEMwIDYuNyAwIDMuNCAwIDAgWiAiIGZpbGw9IiMzREI4NTciIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI5MCw1NzQpIi8+CjxwYXRoIGQ9Ik0wIDAgQzcuNTkgMCAxNS4xOCAwIDIzIDAgQzIzIDMuMyAyMyA2LjYgMjMgMTAgQzE1LjQxIDEwIDcuODIgMTAgMCAxMCBDMCA2LjcgMCAzLjQgMCAwIFogIiBmaWxsPSIjMzdCNjUxIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgzMjEsNTc0KSIvPgo8cGF0aCBkPSJNMCAwIEM3LjU5IDAgMTUuMTggMCAyMyAwIEMyMyAzLjMgMjMgNi42IDIzIDEwIEMxNS40MSAxMCA3LjgyIDEwIDAgMTAgQzAgNi43IDAgMy40IDAgMCBaICIgZmlsbD0iIzMyQjM0RCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMzIxLDU1NikiLz4KPHBhdGggZD0iTTAgMCBDNy41OSAwIDE1LjE4IDAgMjMgMCBDMjMgMy4zIDIzIDYuNiAyMyAxMCBDMTUuNDEgMTAgNy44MiAxMCAwIDEwIEMwIDYuNyAwIDMuNCAwIDAgWiAiIGZpbGw9IiMzNEI0NEYiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI5MSw1NTYpIi8+CjxwYXRoIGQ9Ik0wIDAgQzcuNTkgMCAxNS4xOCAwIDIzIDAgQzIzIDMuMyAyMyA2LjYgMjMgMTAgQzE1LjQxIDEwIDcuODIgMTAgMCAxMCBDMCA2LjcgMCAzLjQgMCAwIFogIiBmaWxsPSIjM0FCNzU0IiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgzMjEsNTM4KSIvPgo8cGF0aCBkPSJNMCAwIEM3LjU5IDAgMTUuMTggMCAyMyAwIEMyMyAzLjMgMjMgNi42IDIzIDEwIEMxNS40MSAxMCA3LjgyIDEwIDAgMTAgQzAgNi43IDAgMy40IDAgMCBaICIgZmlsbD0iIzM4QjY1MiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMzEzLDYzKSIvPgo8cGF0aCBkPSJNMCAwIEM3LjU5IDAgMTUuMTggMCAyMyAwIEMyMyAzLjMgMjMgNi42IDIzIDEwIEMxNS40MSAxMCA3LjgyIDEwIDAgMTAgQzAgNi43IDAgMy40IDAgMCBaICIgZmlsbD0iIzM2QjU1MCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjgyLDYzKSIvPgo8cGF0aCBkPSJNMCAwIEM3LjU5IDAgMTUuMTggMCAyMyAwIEMyMyAzLjMgMjMgNi42IDIzIDEwIEMxNS40MSAxMCA3LjgyIDEwIDAgMTAgQzAgNi43IDAgMy40IDAgMCBaICIgZmlsbD0iIzMxQjM0RCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjgyLDQ1KSIvPgo8cGF0aCBkPSJNMCAwIEM3LjI2IDAgMTQuNTIgMCAyMiAwIEMyMiAzLjMgMjIgNi42IDIyIDEwIEMxNC43NCAxMCA3LjQ4IDEwIDAgMTAgQzAgNi43IDAgMy40IDAgMCBaICIgZmlsbD0iIzJGQjI0QiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMzEzLDQ1KSIvPgo8cGF0aCBkPSJNMCAwIEM3LjU5IDAgMTUuMTggMCAyMyAwIEMyMyAyLjk3IDIzIDUuOTQgMjMgOSBDMTUuNDEgOSA3LjgyIDkgMCA5IEMwIDYuMDMgMCAzLjA2IDAgMCBaICIgZmlsbD0iIzJFQjI0OSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMjgyLDI4KSIvPgo8cGF0aCBkPSJNMCAwIEMtMS45OCAwLjMzIC0zLjk2IDAuNjYgLTYgMSBDLTYgMS42NiAtNiAyLjMyIC02IDMgQy03LjU3NTg3ODkxIDMuMzgwOTE3OTcgLTcuNTc1ODc4OTEgMy4zODA5MTc5NyAtOS4xODM1OTM3NSAzLjc2OTUzMTI1IEMtMjMuMDEyNzY1MjYgNy4wNTkzOTU1OCAtMjMuMDEyNzY1MjYgNy4wNTkzOTU1OCAtMzYgMTIuNjg3NSBDLTQwLjkzMTA3Njg3IDE1LjI2ODk3Mjg0IC00NC40OTM1MjY0MiAxNS40NDQwNzA0NSAtNTAgMTUgQy01MCAxNS42NiAtNTAgMTYuMzIgLTUwIDE3IEMtNTEuNTQ2ODc1IDE3LjEyMzc1IC01MS41NDY4NzUgMTcuMTIzNzUgLTUzLjEyNSAxNy4yNSBDLTU3LjAyNDQwMDIgMTcuNzIwNzgwMjcgLTU3LjAyNDQwMDIgMTcuNzIwNzgwMjcgLTU5Ljc1IDIwIEMtNjQuMzMxNTYwNzMgMjIuODE5NDIxOTkgLTY4LjcxMTQwOTcgMjIuODExNzkzOTQgLTc0IDIzIEMtNzIgMjEgLTcyIDIxIC02OC44NzUgMjAuODc1IEMtNjcuNDUxODc1IDIwLjkzNjg3NSAtNjcuNDUxODc1IDIwLjkzNjg3NSAtNjYgMjEgQy02NS42NyAyMC4wMSAtNjUuMzQgMTkuMDIgLTY1IDE4IEMtNjIuNjg0NTY5NTcgMTcuMjczNTkwNDUgLTYwLjM0NzMwMDY1IDE2LjYxNTY4NTQyIC01OCAxNiBDLTU2Ljk4OTM3NSAxNS40NjM3NSAtNTUuOTc4NzUgMTQuOTI3NSAtNTQuOTM3NSAxNC4zNzUgQy01MS42OTQ5MjY4NyAxMi44NTcxOTk4MSAtNDkuNTM1MjU5NTMgMTIuNzQ3NDgxNDYgLTQ2IDEzIEMtNDYgMTIuMzQgLTQ2IDExLjY4IC00NiAxMSBDLTQzLjAyNDU0NTM5IDkuMDE2MzYzNTkgLTQxLjYwOTA0ODM5IDguNjE0MzYyNjQgLTM4LjE4NzUgOC4wNjI1IEMtMzMuOTk3NTk2MjggNy4yOTAxOTU1NCAtMzAuNzU5NTc0MTggNi4wNTA2NzY4MiAtMjcgNCBDLTIyLjI0OTk3MzAxIDIuMDExNjE2NjEgLTE3Ljc2ODg3MjI0IDEuNjYyMTAwODIgLTEyLjY5MTQwNjI1IDEuMjg5MDYyNSBDLTEwLjMwOTc0NjM4IDEuMDMzMjY3MzkgLTguMjcyOTYwNTIgMC41OTg4NzI3OCAtNiAtMC4xMjUgQy0zIC0xIC0zIC0xIDAgMCBaICIgZmlsbD0iIzExODAwOSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTM3LDU0NSkiLz4KPHBhdGggZD0iTTAgMCBDNy4yNiAwIDE0LjUyIDAgMjIgMCBDMjIgMi45NyAyMiA1Ljk0IDIyIDkgQzE0Ljc0IDkgNy40OCA5IDAgOSBDMCA2LjAzIDAgMy4wNiAwIDAgWiAiIGZpbGw9IiMyQ0IyNDgiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDI5MSw1MzkpIi8+CjxwYXRoIGQ9Ik0wIDAgQzcuMjYgMCAxNC41MiAwIDIyIDAgQzIyIDIuOTcgMjIgNS45NCAyMiA5IEMxNC43NCA5IDcuNDggOSAwIDkgQzAgNi4wMyAwIDMuMDYgMCAwIFogIiBmaWxsPSIjMkJCMTQ3IiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgzMTMsMjgpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuMzMgMCAwLjY2IDAgMSAwIEMxIDIuOTcgMSA1Ljk0IDEgOSBDLTAuMzIgOS4zMyAtMS42NCA5LjY2IC0zIDEwIEMtMi45MzgxMjUgMTAuODY2MjUgLTIuODc2MjUgMTEuNzMyNSAtMi44MTI1IDEyLjYyNSBDLTMgMTYgLTMgMTYgLTQuMzc1IDE4LjU2MjUgQy02LjAyOTQ2ODU0IDIyLjA2MjMzNzMgLTYuNDg5NTM0MyAyNC42ODg4MTExNyAtNyAyOC41IEMtNy42NTExNzczMSAzMy4yODYxNTMyNCAtOC41ODUzMTI0OCAzNi43NzQyOTY4NCAtMTEgNDEgQy0xMS43MDQ5MTI2NyA0My4zMjIwNjUyNSAtMTIuMzcyMTI0MjkgNDUuNjU1OTMwNjggLTEzIDQ4IEMtMTMuNjU1NzI3OTEgNTAuMDAzNjEzMDcgLTE0LjMxODc1Mjk0IDUyLjAwNDkxOTMzIC0xNSA1NCBDLTE2LjMyIDU0IC0xNy42NCA1NCAtMTkgNTQgQy0xOC4zNCA1MC43IC0xNy42OCA0Ny40IC0xNyA0NCBDLTE2LjM0IDQ0IC0xNS42OCA0NCAtMTUgNDQgQy0xNC44NzM2NzE4NyA0My4zMTkzNzUgLTE0Ljc0NzM0Mzc1IDQyLjYzODc1IC0xNC42MTcxODc1IDQxLjkzNzUgQy0xMy45MTIzMjAxMyAzOC41ODI2ODgyMiAtMTMuMDQzMjUxNzQgMzUuMzAyODU4OTggLTEyLjEyNSAzMiBDLTExLjc5NzU3ODEzIDMwLjgwMzc1IC0xMS40NzAxNTYyNSAyOS42MDc1IC0xMS4xMzI4MTI1IDI4LjM3NSBDLTEwIDI1IC0xMCAyNSAtOC40NzI2NTYyNSAyMi41MTk1MzEyNSBDLTYuNjAwMjA2MTkgMTkuMzE2MDAyNjQgLTYuMDI1MzA1NjUgMTYuMzE5NDE0NTEgLTUuMzEyNSAxMi42ODc1IEMtNS4wNjExMzI4MSAxMS40MzMyNDIxOSAtNC44MDk3NjU2MiAxMC4xNzg5ODQzOCAtNC41NTA3ODEyNSA4Ljg4NjcxODc1IEMtNC4zNjkwMjM0NCA3LjkzNDEwMTU2IC00LjE4NzI2NTYyIDYuOTgxNDg0MzcgLTQgNiBDLTMuMDEgNiAtMi4wMiA2IC0xIDYgQy0wLjY3IDQuMDIgLTAuMzQgMi4wNCAwIDAgWiAiIGZpbGw9IiMxMTdGMDkiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDcyLDQ4MCkiLz4KPHBhdGggZD0iTTAgMCBDMTMuNTMgMCAyNy4wNiAwIDQxIDAgQzQxIDAuMzMgNDEgMC42NiA0MSAxIEMyNy4zMzA1MDQzNSAzLjI4MTY0NDU4IDEzLjgyNjEwMjMyIDMuMjE0OTk5MiAwIDMgQzAgMi4wMSAwIDEuMDIgMCAwIFogIiBmaWxsPSIjRTY2MDBEIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSgzMDYsNTk3KSIvPgo8cGF0aCBkPSJNMCAwIEMtMC41OTQyNTc4MSAwLjE0Njk1MzEyIC0xLjE4ODUxNTYzIDAuMjkzOTA2MjUgLTEuODAwNzgxMjUgMC40NDUzMTI1IEMtNi44NDc2NjQ1IDEuODExMDMyMDcgLTExLjA2NDU5NDM4IDMuNTAwMTkxOTggLTE1LjU2MjUgNi4xODc1IEMtMjAuNzIxMTA2NjEgOS4xNjM2MTkyIC0yNC4xMTQ5Mjg0NCA5LjU3ODg1OTUgLTMwIDkgQy0zMCA5LjY2IC0zMCAxMC4zMiAtMzAgMTEgQy0zMS41NDY4NzUgMTEuMTIzNzUgLTMxLjU0Njg3NSAxMS4xMjM3NSAtMzMuMTI1IDExLjI1IEMtMzcuMDI0NDAwMiAxMS43MjA3ODAyNyAtMzcuMDI0NDAwMiAxMS43MjA3ODAyNyAtMzkuNzUgMTQgQy00NC4zMzE1NjA3MyAxNi44MTk0MjE5OSAtNDguNzExNDA5NyAxNi44MTE3OTM5NCAtNTQgMTcgQy01MiAxNSAtNTIgMTUgLTQ4Ljg3NSAxNC44NzUgQy00Ny45MjYyNSAxNC45MTYyNSAtNDYuOTc3NSAxNC45NTc1IC00NiAxNSBDLTQ1LjY3IDE0LjAxIC00NS4zNCAxMy4wMiAtNDUgMTIgQy00Mi4zMzk4NDM3NSAxMS4xNTYyNSAtNDIuMzM5ODQzNzUgMTEuMTU2MjUgLTM4LjkzNzUgMTAuNSBDLTM0LjM5MTYzMTI3IDkuNTQ4MTkzMjQgLTMwLjE3OTU2ODA2IDguNDc4OTI4MjYgLTI1Ljg3ODkwNjI1IDYuNzQ2MDkzNzUgQy0yMy4xMDcwODY3OSA1LjY0NTQzMzYzIC0yMC4yNzMyNDU4OCA0Ljc1MjY2NDAzIC0xNy40Mzc1IDMuODMyMDMxMjUgQy0xNS42NTI3ODkzMiAzLjIyMjgyNzEyIC0xMy44ODM1Nzg5MSAyLjU2NzY5MDIgLTEyLjEyNSAxLjg4NjcxODc1IEMtMTEuMTU1NjI1IDEuNTExNjAxNTYgLTEwLjE4NjI1IDEuMTM2NDg0MzggLTkuMTg3NSAwLjc1IEMtOC4yOTQxNzk2OSAwLjM5NDIxODc1IC03LjQwMDg1OTM4IDAuMDM4NDM3NSAtNi40ODA0Njg3NSAtMC4zMjgxMjUgQy0zLjgzNDU5NzU0IC0xLjA0NDgwMTkzIC0yLjU0MTgwNzU5IC0wLjkyNDI5MzY3IDAgMCBaICIgZmlsbD0iIzE1NDUwQyIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTE3LDU1MSkiLz4KPHBhdGggZD0iTTAgMCBDMC4zMyAwIDAuNjYgMCAxIDAgQzEgMi4zMSAxIDQuNjIgMSA3IEMwLjM0IDcgLTAuMzIgNyAtMSA3IEMtMS4xODU2MjUgOC41MTU5Mzc1IC0xLjE4NTYyNSA4LjUxNTkzNzUgLTEuMzc1IDEwLjA2MjUgQy0yLjMwMzg2NTQ0IDE1LjkxNDM1MjI1IC00LjA4ODk1Nzg4IDIxLjQwMzM3NjY2IC02IDI3IEMtNi42NiAyNyAtNy4zMiAyNyAtOCAyNyBDLTcuNjUyODI5NzkgMjAuOTQyNDc4NDggLTcuMDQ2MDU5NjUgMTYuMzYxMDY0OTggLTQgMTEgQy0zLjMwODk5NDQ3IDkuMDA4Mjc4MTggLTIuNjQwOTcyOTcgNy4wMDgzODE5NiAtMiA1IEMtMS4zNDU4ODMxNSAzLjMyODM2ODA1IC0wLjY4MzQ2NjgyIDEuNjU5ODQ3OTggMCAwIFogIiBmaWxsPSIjMTM1NTBCIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1Miw1MzQpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuMzMgMCAwLjY2IDAgMSAwIEMxIDIuMzEgMSA0LjYyIDEgNyBDMC4zNCA3IC0wLjMyIDcgLTEgNyBDLTEgOC4zMiAtMSA5LjY0IC0xIDExIEMyLjk4OTI0NTQzIDEwLjU4NDQ1MzYgNi4zNDMzNTUyMyA5Ljk1NjY4ODIzIDEwLjA2MjUgOC40Mzc1IEMxMy40ODc3ODY5IDcuMDYyMDQzNjYgMTYuMjc3MDg0ODQgNi43MjA3ODEzNiAyMCA3IEMyMCA3LjMzIDIwIDcuNjYgMjAgOCBDMTguMzUgOCAxNi43IDggMTUgOCBDMTUgOC42NiAxNSA5LjMyIDE1IDEwIEM5LjQzOTMwNDE4IDEyLjI1NDMzNjE0IDMuOTIxNDM0OSAxMi41OTk2MTgyOCAtMiAxMyBDLTIuMTkyOTQ0MDggOC4xNzYzOTgxMSAtMS43NTc0NzYxNCA0LjUwMzUzMjYyIDAgMCBaICIgZmlsbD0iIzE1NTkwRSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDMsNTYxKSIvPgo8cGF0aCBkPSJNMCAwIEMtMS45OCAwLjMzIC0zLjk2IDAuNjYgLTYgMSBDLTYgMS42NiAtNiAyLjMyIC02IDMgQy0xNC40Mjg1NzE0MyA1LjI4NTcxNDI5IC0xNC40Mjg1NzE0MyA1LjI4NTcxNDI5IC0xOSA1IEMtMTguMzQgNC42NyAtMTcuNjggNC4zNCAtMTcgNCBDLTE3IDMuMzQgLTE3IDIuNjggLTE3IDIgQy0xNS45ODkzNzUgMS44NzYyNSAtMTQuOTc4NzUgMS43NTI1IC0xMy45Mzc1IDEuNjI1IEMtOS45OTE5OTE2OCAxLjA4ODYzOTAxIC05Ljk5MTk5MTY4IDEuMDg4NjM5MDEgLTYuMjUgLTAuMTI1IEMtMyAtMSAtMyAtMSAwIDAgWiAiIGZpbGw9IiMxNjRDMEMiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEzNyw1NDUpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuNjYgMC4zMyAxLjMyIDAuNjYgMiAxIEMxLjY3IDEuNjYgMS4zNCAyLjMyIDEgMyBDLTEuMzEzMTIxMjIgMy42MDQzMDI5MiAtMy42NTIzNjQwNCA0LjExMDQ4NTQxIC02IDQuNTYyNSBDLTEwLjMyNjczNjA2IDUuMDYxMDQyMDcgLTEwLjMyNjczNjA2IDUuMDYxMDQyMDcgLTE0IDcgQy0xNS45OTk1ODM2NCA3LjA0MDgwNzgzIC0xOC4wMDA0NTI1NCA3LjA0MjU0MzU2IC0yMCA3IEMtMTguNjggNi42NyAtMTcuMzYgNi4zNCAtMTYgNiBDLTE2IDUuMzQgLTE2IDQuNjggLTE2IDQgQy0xMC41MTMyNDgwNCAyLjEzMjE2OTU0IC01Ljc3ODA3MDI0IDEuNzY0MTYwNCAwIDIgQzAgMS4zNCAwIDAuNjggMCAwIFogIiBmaWxsPSIjMTE3RTBCIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg3MCw1NjMpIi8+CjxwYXRoIGQ9Ik0wIDAgQzEuNjAwODAxNTEgNC4wMDIwMDM3OCAwLjI5Mjc5NjkyIDcuMDQ1NTYyMzYgLTEgMTEgQy0xLjY2IDExIC0yLjMyIDExIC0zIDExIEMtMi45MzgxMjUgMTEuNzQyNSAtMi44NzYyNSAxMi40ODUgLTIuODEyNSAxMy4yNSBDLTMuMDMwOTQyOTYgMTYuNDUzODMwMDYgLTMuOTAyNTAwMDUgMTcuNjQwMzEyNTYgLTYgMjAgQy01LjIzODAzMzUzIDE1Ljg0MDkzMzAyIC00LjE1NjgxOTYxIDExLjgxNTg4MDY4IC0zIDcuNzUgQy0yLjY0OTM3NSA2LjUwNzM0Mzc1IC0yLjI5ODc1IDUuMjY0Njg3NSAtMS45Mzc1IDMuOTg0Mzc1IEMtMSAxIC0xIDEgMCAwIFogIiBmaWxsPSIjMTI1RDBDIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg2Myw1MDQpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuMzMgMS4zMiAwLjY2IDIuNjQgMSA0IEM0LjQ2NSAzLjUwNSA0LjQ2NSAzLjUwNSA4IDMgQzcuMDEgNC40ODUgNy4wMSA0LjQ4NSA2IDYgQzIuMzc1IDYuMTg3NSAyLjM3NSA2LjE4NzUgLTEgNiBDLTAuNjcgNC4wMiAtMC4zNCAyLjA0IDAgMCBaICIgZmlsbD0iIzE5MkIwRiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDAsNTcwKSIvPgo8cGF0aCBkPSJNMCAwIEMwIDAuMzMgMCAwLjY2IDAgMSBDLTEuNjUgMSAtMy4zIDEgLTUgMSBDLTUgMS42NiAtNSAyLjMyIC01IDMgQy0xMS4yODU3MTQyOSA1LjQyODU3MTQzIC0xMS4yODU3MTQyOSA1LjQyODU3MTQzIC0xNSA0IEMtMTAuOTg5MTcyMTMgLTAuMDEwODI3ODcgLTUuNDQwMjI3MzggLTAuMjY1Mzc2OTUgMCAwIFogIiBmaWxsPSIjMTM0NzBEIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg2Myw1NjgpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuMzMgMCAwLjY2IDAgMSAwIEMxIDIuOTcgMSA1Ljk0IDEgOSBDLTAuMzIgOS4zMyAtMS42NCA5LjY2IC0zIDEwIEMtMi4yMTMwMjY3NSA2LjU4OTc4MjU3IC0xLjEyODgwMDU3IDMuMzExMTQ4MzQgMCAwIFogIiBmaWxsPSIjMTM4NzBDIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg3Miw0ODApIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuNjYgMCAxLjMyIDAgMiAwIEMxLjEyNSA3Ljc1IDEuMTI1IDcuNzUgMCAxMCBDLTAuNjYgMTAgLTEuMzIgMTAgLTIgMTAgQy0xLjM0IDYuNyAtMC42OCAzLjQgMCAwIFogIiBmaWxsPSIjMTM0RjBCIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1NSw1MjQpIi8+CjxwYXRoIGQ9Ik0wIDAgQy0zLjI4NDkxMzczIDIuMTg5OTQyNDggLTQuODMwOTU2MzkgMi4zNTI3NzMzOSAtOC42ODc1IDIuNjI1IEMtMTAuMTc4MzAwNzggMi43MzcxNDg0NCAtMTAuMTc4MzAwNzggMi43MzcxNDg0NCAtMTEuNjk5MjE4NzUgMi44NTE1NjI1IEMtMTIuODM4MTA1NDcgMi45MjUwMzkwNiAtMTIuODM4MTA1NDcgMi45MjUwMzkwNiAtMTQgMyBDLTExLjg3MDMzOTk1IDAuODcwMzM5OTUgLTEwLjk1OTMxNzk2IDAuNTIzNzUzMzggLTguMTI1IC0wLjE4NzUgQy03LjQ0Njk1MzEyIC0wLjM2NjY3OTY5IC02Ljc2ODkwNjI1IC0wLjU0NTg1OTM3IC02LjA3MDMxMjUgLTAuNzMwNDY4NzUgQy0zLjc3MTgxNDQ0IC0xLjAyOTcwNzE4IC0yLjE5NDQ5MDM2IC0wLjY5Mzc3Mzg2IDAgMCBaICIgZmlsbD0iIzE0MkUwQSIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNzcsNTY1KSIvPgo8cGF0aCBkPSJNMCAwIEMwLjMzIDAgMC42NiAwIDEgMCBDMC4zMzMzMzMzMyA0LjY2NjY2NjY3IC0wLjMzMzMzMzMzIDkuMzMzMzMzMzMgLTEgMTQgQy0xLjY2IDE0IC0yLjMyIDE0IC0zIDE0IEMtMi44ODUxMjI1MiAxMi40MTU5MDAwNiAtMi43NTc2NTQ5MiAxMC44MzI3MTAzNyAtMi42MjUgOS4yNSBDLTIuNTU1MzkwNjMgOC4zNjgyODEyNSAtMi40ODU3ODEyNSA3LjQ4NjU2MjUgLTIuNDE0MDYyNSA2LjU3ODEyNSBDLTIuMDAxNDk5NDUgNC4wMDkzMzYxOCAtMS4yODgzOTA0MyAyLjI0MTU4OTg1IDAgMCBaICIgZmlsbD0iIzEzMzkwQiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDcsNTQ3KSIvPgo8cGF0aCBkPSJNMCAwIEMwLjY2IDAgMS4zMiAwIDIgMCBDMiAwLjY2IDIgMS4zMiAyIDIgQzMuOTggMiA1Ljk2IDIgOCAyIEM3LjY3IDIuNjYgNy4zNCAzLjMyIDcgNCBDNC42OSA0IDIuMzggNCAwIDQgQzAgMi42OCAwIDEuMzYgMCAwIFogIiBmaWxsPSIjMTY4ODEwIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg0Miw1NjgpIi8+CjxwYXRoIGQ9Ik0wIDAgQzAuMzMgMCAwLjY2IDAgMSAwIEMxLjM2OTIzMDc3IDYuNCAxLjM2OTIzMDc3IDYuNCAtMC41IDkuNDM3NSBDLTAuOTk1IDkuOTUzMTI1IC0xLjQ5IDEwLjQ2ODc1IC0yIDExIEMtMi4xOTYyMjI0MSA2Ljc4MTIxODA4IC0xLjgwMjMwMTY4IDMuODI5ODkxMDYgMCAwIFogIiBmaWxsPSIjMTQzNTBBIiB0cmFuc2Zvcm09InRyYW5zbGF0ZSg2NSw0OTMpIi8+Cjwvc3ZnPgo=" alt="WAGS">
+    WAGS
+  </a>
+</div>`; // static, trusted, internal template — not user input
+        const node = container.firstElementChild;
+
+        if (opts.label !== undefined) {
+            node.querySelector('.um-powered-label').textContent = opts.label; // textContent — safe
+        }
+        if (opts.href) {
+            node.querySelector('.um-powered-badge').href = opts.href;
+        }
+
+        return node;
+    }
+
+    // ---------------------------------------------------------------
+    // BUTTON DESIGN SYSTEM — small set of pre-styled action buttons,
+    // used by confirm()/alert() and available for custom footers too.
+    // ---------------------------------------------------------------
+    function _injectButtonStyles() {
+        if (document.getElementById('um-btn-styles')) return;
+
+        const css = [
+            '.um-btn{padding:10px 20px;border:none;border-radius:8px;cursor:pointer;',
+            'font-size:.9rem;font-weight:600;font-family:var(--um-font);',
+            'transition:opacity .2s ease,transform .2s ease;}',
+            '.um-btn:hover{opacity:.88;transform:translateY(-1px);}',
+            '.um-btn:active{transform:translateY(0);}',
+            '.um-btn:focus-visible{outline:2px solid var(--um-accent);outline-offset:2px;}',
+            '.um-btn-primary{background:var(--um-accent);color:var(--um-header-bg);}',
+            '.um-btn-secondary{background:#e9ecef;color:#212529;}',
+            '.um-btn-success{background:#28a745;color:#fff;}',
+            '.um-btn-danger{background:#dc3545;color:#fff;}',
+            '.um-btn:disabled{opacity:.6;cursor:not-allowed;transform:none;}',
+            '@media (prefers-color-scheme:dark){.um-btn-secondary{background:#33364a;color:#e8e8ea;}}'
+        ].join('');
+
+        const style = document.createElement('style');
+        style.id = 'um-btn-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    function _makeButton(text, type, onClick) {
+        _injectButtonStyles();
+        const btn = document.createElement('button');
+        btn.className = 'um-btn um-btn-' + (type || 'primary');
+        btn.type = 'button';
+        btn.textContent = text; // textContent — safe
+        btn.addEventListener('click', function () {
+            // Guards against a slow double-click firing onConfirm/onCancel
+            // twice before close()'s animation finishes.
+            if (btn.disabled) return;
+            btn.disabled = true;
+            onClick();
+        });
+        return btn;
+    }
+
+    // ---------------------------------------------------------------
+    // escapeHtml — small safety utility, exposed on the public API
+    // for anyone building custom content-type renderers with innerHTML.
+    // ---------------------------------------------------------------
+    function escapeHtml(text) {
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+        return String(text).replace(/[&<>"']/g, function (m) { return map[m]; });
+    }
+
+    // ---------------------------------------------------------------
+    // _showBodyError — shared helper for content-type error states.
+    // Uses role="alert" so screen readers announce the failure the
+    // same way sighted users see it swap in, instead of silently
+    // replacing loading/placeholder content.
+    // ---------------------------------------------------------------
+    function _showBodyError(bodyEl, message) {
+        bodyEl.innerHTML = '';
+        const el = document.createElement('div');
+        el.setAttribute('role', 'alert');
+        el.style.cssText = 'padding:20px;text-align:center;color:#b91c1c;';
+        el.textContent = message; // textContent — safe
+        bodyEl.appendChild(el);
+    }
+
+    // ---------------------------------------------------------------
+    // BUILT-IN CONTENT TYPE: "_rawNode"
+    // Internal helper content type: mounts a pre-built DOM node as-is.
+    // Used by confirm()/alert() below; also handy for ad-hoc content.
+    // ---------------------------------------------------------------
+    registerContentType('_rawNode', function (props, bodyEl) {
+        if (props && props.node instanceof Node) bodyEl.appendChild(props.node);
+    });
+
+    // ---------------------------------------------------------------
+    // URL SANITISER — ported from SocialMediaModal.js. Protocol
+    // allowlist; anything else (javascript:, data:, etc.) is silently
+    // dropped to prevent XSS via an href/src built from external data.
+    // Used by the "doc", "markdown", "gallery", and "iconGrid" content
+    // types below.
+    // ---------------------------------------------------------------
+    const SAFE_PROTOCOLS = ['https:', 'http:', 'mailto:'];
+
+    function _sanitiseURL(url) {
+        if (!url || typeof url !== 'string') return null;
+        const trimmed = url.trim();
+        if (trimmed === '') return null;
+        try {
+            const base = (typeof window !== 'undefined' && window.location) ? window.location.href : undefined;
+            const parsed = new URL(trimmed, base);
+            if (SAFE_PROTOCOLS.indexOf(parsed.protocol) === -1) {
+                return null;
+            }
+            return trimmed; // return the original string, not the parsed/normalized form
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // BUILT-IN CONTENT TYPE: "doc"
+    // Simplified from sheet-nav17.js's _DocViewer — iframe-based
+    // viewer for Drive/Docs/PDF/images; anything else opens as a link.
+    // ---------------------------------------------------------------
+    function _isSupportedDocUrl(url) {
+        if (!url) return false;
+        const lower = url.toLowerCase().split('?')[0].split('#')[0];
+        if (lower.includes('drive.google.com/file/d/')) return true;
+        if (lower.includes('docs.google.com/document/d/')) return true;
+        if (lower.includes('docs.google.com/spreadsheets/d/')) return true;
+        if (lower.includes('docs.google.com/presentation/d/')) return true;
+        const IMAGE    = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
+        const MARKDOWN = ['.md', '.markdown'];
+        return lower.endsWith('.pdf')
+            || IMAGE.some(function (ext) { return lower.endsWith(ext); })
+            || MARKDOWN.some(function (ext) { return lower.endsWith(ext); });
+    }
+
+    // Google's normal share links (".../view", ".../edit") send
+    // X-Frame-Options/CSP headers that refuse to iframe-embed — only the
+    // ".../preview" variant of the same URL is embeddable. Callers pass in
+    // whatever share link Drive's "Copy link" button gives them, so this
+    // rewrites it rather than requiring every caller to know that detail.
+    // ?rm=minimal (undocumented but stable Drive param) also strips down
+    // most of Drive's own embedded UI chrome before CSS cropping (below)
+    // handles what's left.
+    function _toDriveEmbedUrl(url) {
+        const m = url.match(/^(https?:\/\/(?:drive|docs)\.google\.com\/(?:file\/d|document\/d|spreadsheets\/d|presentation\/d)\/[^/?#]+)/i);
+        if (!m) return url;
+        return m[1] + '/preview?rm=minimal';
+    }
+
+    function _injectDocStyles() {
+        if (document.getElementById('um-doc-styles')) return;
+        const css = [
+            /* Drive renders black letterbox bars down each side on text/
+               markdown files even with ?rm=minimal. A gentle width-only
+               zoom+crop pushes those off-screen without touching vertical
+               layout (so heading lines don't get cropped along with it). */
+            '.um-doc-drive-wrap{overflow:hidden;border-radius:8px;width:100%;position:relative;}',
+            '.um-doc-drive-frame{width:106%;border:0;display:block;margin:0 0 0 -3%;}',
+            /* The top-right "pop out" icon is a small, fixed-size element —
+               a precise corner patch is more reliable than zooming the
+               whole frame (which is what risked cropping real content
+               vertically). Cosmetic only, not a security boundary — see
+               the comment where this class is applied. */
+            '.um-doc-drive-icon-patch{position:absolute;top:0;right:0;width:46px;height:46px;',
+            'background:#fff;border-radius:0 8px 0 0;pointer-events:auto;}'
+        ].join('');
+        const style = document.createElement('style');
+        style.id = 'um-doc-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    registerContentType('doc', function (props, bodyEl, controller) {
+        if (props.error) {
+            _showBodyError(bodyEl, props.error);
+            return;
+        }
+
+        // Array input (props.images / props.gallery) => hand off entirely
+        // to the "gallery" content type. No props.url required in this case.
+        const galleryUrls = Array.isArray(props.images) ? props.images
+            : (Array.isArray(props.gallery) ? props.gallery : null);
+        if (galleryUrls) {
+            return _contentTypes.gallery(
+                { images: galleryUrls, captions: props.captions },
+                bodyEl,
+                controller
+            );
+        }
+
+        if (!props.url) {
+            _showBodyError(bodyEl, 'Doc viewer error: props.url is required.');
+            return;
+        }
+
+        const safeUrl = _sanitiseURL(props.url);
+        if (!safeUrl) {
+            _showBodyError(bodyEl, 'Doc viewer error: URL was rejected (unsupported or unsafe protocol).');
+            return;
+        }
+
+        if (!_isSupportedDocUrl(safeUrl)) {
+            const link = document.createElement('a');
+            link.href = safeUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Open document in a new tab \u2197'; // textContent — safe
+            link.style.cssText = 'display:block;text-align:center;padding:24px;';
+            bodyEl.appendChild(link);
+            return;
+        }
+
+        // .md / .markdown => hand off to the "markdown" content type, which
+        // fetches and renders the file (with the raw/rendered toggle + copy).
+        const MARKDOWN = ['.md', '.markdown'];
+        const lowerUrl = safeUrl.toLowerCase().split('?')[0].split('#')[0];
+        if (MARKDOWN.some(function (ext) { return lowerUrl.endsWith(ext); })) {
+            return _contentTypes.markdown({ url: safeUrl }, bodyEl, controller);
+        }
+
+        const IMAGE = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'];
+        const isImage = IMAGE.some(function (ext) { return lowerUrl.endsWith(ext); });
+
+        if (isImage) {
+            const img = document.createElement('img');
+            img.loading = 'lazy';
+            img.decoding = 'async';
+            img.alt = props.alt || '';
+            img.src = safeUrl;
+            img.style.cssText = 'max-width:100%;display:block;margin:0 auto;';
+            bodyEl.appendChild(img);
+            return;
+        }
+
+        const iframe = document.createElement('iframe');
+        iframe.src = _toDriveEmbedUrl(safeUrl);
+        iframe.style.cssText = 'width:100%;height:' + (props.viewerHeight || '70vh') + ';border:0;display:block;';
+        iframe.setAttribute('allowfullscreen', '');
+        // _sanitiseURL() only restricts protocol, not origin — sandbox limits
+        // what an embedded page can do regardless of which origin it is.
+        // allow-scripts + allow-same-origin are needed for Drive/Docs/Sheets/
+        // Slides/PDF viewers to render; allow-forms covers PDF form fields.
+        // allow-popups is deliberately NOT included: it's what let Drive's
+        // own "pop out" button (and any other click inside the embed) open
+        // a new window/tab. This is the actual functional fix for that —
+        // the icon-patch CSS below is cosmetic only and was never a real
+        // block on its own. Trade-off: a genuine target="_blank" link
+        // inside a PDF/Doc will also be silently blocked now, not just
+        // Drive's own button — acceptable here since these are policy/
+        // info documents, not files expected to contain outbound links.
+        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+        iframe.setAttribute('referrerpolicy', 'no-referrer');
+
+        // Even with ?rm=minimal, Drive's /preview still renders its own
+        // top-right "pop out" icon and, for text/markdown files, black
+        // letterbox bars down each side — cross-origin content we can't
+        // reach into and remove directly. Two different fixes for two
+        // different problems: a gentle width-only zoom+crop for the bars
+        // (safe — doesn't touch vertical layout, so heading lines don't
+        // get cropped along with it), and a small fixed-size patch over
+        // the icon's corner specifically (deterministic, rather than
+        // trying to zoom/shift the whole frame to chase a small element).
+        // Applies automatically to every Drive preview — no opt-in prop.
+        const isDrivePreview = iframe.src.indexOf('drive.google.com') !== -1 && iframe.src.indexOf('/preview') !== -1;
+        if (isDrivePreview) {
+            _injectDocStyles();
+            const wrap = document.createElement('div');
+            wrap.className = 'um-doc-drive-wrap';
+            wrap.style.height = props.viewerHeight || '70vh';
+            iframe.className = 'um-doc-drive-frame';
+            iframe.style.width = '';
+            iframe.style.height = '100%'; // fills wrap vertically — no vertical crop, so nothing above gets clipped
+            wrap.appendChild(iframe);
+
+            const patch = document.createElement('div');
+            patch.className = 'um-doc-drive-icon-patch';
+            patch.setAttribute('aria-hidden', 'true');
+            wrap.appendChild(patch);
+
+            bodyEl.appendChild(wrap);
+            return;
+        }
+
+        bodyEl.appendChild(iframe);
+    });
+
+    // ---------------------------------------------------------------
+    // BUILT-IN CONTENT TYPE: "markdown"
+    // Ported from sheet-nav17.js's _DocViewer._parseMarkdown() +
+    // its Markdown toolbar (raw/rendered toggle, copy button).
+    //
+    //   UnifiedModal.open({
+    //     title: 'README', size: 'lg',
+    //     content: { type: 'markdown', props: { url: 'https://.../README.md' } }
+    //   });
+    //   // or render an already-fetched string directly:
+    //   content: { type: 'markdown', props: { text: '# Hello\n...' } }
+    //
+    // props.url  — fetched via fetch() (must be same-origin or CORS-enabled;
+    //              this engine has no server-side proxy). Takes priority
+    //              rendering-wise if both url and text are given, url wins
+    //              once it resolves.
+    // props.text — raw Markdown string, rendered immediately, no network call.
+    // ---------------------------------------------------------------
+    const MAX_MARKDOWN_LENGTH = 300000; // ~300KB — perf guard, see sheet-nav17.js
+
+    // Delegates to the same protocol allowlist used by doc/gallery/
+    // iconGrid (_sanitiseURL) instead of maintaining a second,
+    // independent regex-based check — one allowlist to keep in sync.
+    // Always returns a usable href (falls back to '#' rather than null,
+    // since this is inlined directly into a built HTML string).
+    function _mdSafeUrl(url) {
+        return _sanitiseURL(url) || '#';
+    }
+
+    function _parseMarkdownToHtml(md) {
+        if (md.length > MAX_MARKDOWN_LENGTH) {
+            md = md.slice(0, MAX_MARKDOWN_LENGTH)
+                + '\n\n---\n\n*(Content truncated — this document is too large to render in full here.)*';
+        }
+
+        function inlineRules(s) {
+            s = escapeHtml(s);
+            s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (_, alt, src) {
+                return '<img src="' + _mdSafeUrl(src) + '" alt="' + alt + '" class="um-md-img">';
+            });
+            s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, text, href) {
+                return '<a href="' + _mdSafeUrl(href) + '" target="_blank" rel="noopener noreferrer" class="um-md-link">' + text + '</a>';
+            });
+            s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+            s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            s = s.replace(/__(.+?)__/g,      '<strong>$1</strong>');
+            s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            s = s.replace(/_(.+?)_/g,   '<em>$1</em>');
+            s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+            s = s.replace(/  \n/g, '<br>');
+            return s;
+        }
+
+        const codeBlocks = [];
+        md = md.replace(/```(\w*)\n?([\s\S]*?)```/g, function (_, lang, code) {
+            const langClass = lang ? ' class="language-' + escapeHtml(lang) + '"' : '';
+            const placeholder = '\x00CODE' + codeBlocks.length + '\x00';
+            codeBlocks.push('<pre class="um-md-code-block"><code' + langClass + '>' + escapeHtml(code.replace(/\n$/, '')) + '</code></pre>');
+            return placeholder;
+        });
+
+        const codeSpans = [];
+        md = md.replace(/`([^`]+)`/g, function (_, code) {
+            const placeholder = '\x00SPAN' + codeSpans.length + '\x00';
+            codeSpans.push('<code class="um-md-code-inline">' + escapeHtml(code) + '</code>');
+            return placeholder;
+        });
+
+        md = md.replace(/(?:^|\n)((?:\|.+\|\n)+)/g, function (_, block) {
+            const rows = block.trim().split('\n').filter(function (r) { return r.trim(); });
+            if (rows.length < 2) return _;
+            const isSep = /^\|[-:| ]+\|$/.test(rows[1].trim());
+            if (!isSep) return _;
+
+            const alignRow = rows[1].split('|').slice(1, -1).map(function (c) {
+                c = c.trim();
+                if (/^:-+:$/.test(c)) return 'center';
+                if (/^-+:$/.test(c))  return 'right';
+                return 'left';
+            });
+
+            function makeRow(row, tag) {
+                return '<tr>' + row.split('|').slice(1, -1).map(function (cell, i) {
+                    return '<' + tag + ' style="text-align:' + (alignRow[i] || 'left') + '">' + inlineRules(cell.trim()) + '</' + tag + '>';
+                }).join('') + '</tr>';
+            }
+
+            const head = '<thead>' + makeRow(rows[0], 'th') + '</thead>';
+            const body = '<tbody>' + rows.slice(2).map(function (r) { return makeRow(r, 'td'); }).join('') + '</tbody>';
+            return '\n<table class="um-md-table">' + head + body + '</table>\n';
+        });
+
+        md = md.replace(/((?:^>.*\n?)+)/gm, function (block) {
+            const inner = block.replace(/^> ?/gm, '').trim();
+            return '<blockquote class="um-md-blockquote">' + inlineRules(inner) + '</blockquote>\n';
+        });
+
+        md = md.replace(/^(#{1,6})\s+(.+)$/gm, function (_, hashes, text) {
+            const level = hashes.length;
+            const plainText = text.replace(/[*_~`[\]]/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[([^\]]+)\]\(.*?\)/g, '$1');
+            const id = plainText.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+            return '<h' + level + ' id="' + escapeHtml(id) + '" class="um-md-h' + level + '">' + inlineRules(text) + '</h' + level + '>';
+        });
+
+        md = md.replace(/^(?:---|\*\*\*|___)\s*$/gm, '<hr class="um-md-hr">');
+
+        md = md.replace(/((?:^[ \t]*[-*+] .+\n?)+)/gm, function (block) {
+            const items = block.trim().split('\n').map(function (line) {
+                const content = line.replace(/^[ \t]*[-*+] /, '');
+                const taskDone = /^\[x\] /i.test(content);
+                const taskOpen = /^\[ \] /i.test(content);
+                if (taskDone || taskOpen) {
+                    const label = content.replace(/^\[.\] /, '');
+                    const chk = taskDone
+                        ? '<input type="checkbox" checked disabled> '
+                        : '<input type="checkbox" disabled> ';
+                    return '<li class="um-md-task">' + chk + inlineRules(label) + '</li>';
+                }
+                return '<li>' + inlineRules(content) + '</li>';
+            }).join('');
+            return '<ul class="um-md-ul">' + items + '</ul>\n';
+        });
+
+        md = md.replace(/((?:^[ \t]*\d+\. .+\n?)+)/gm, function (block) {
+            const items = block.trim().split('\n').map(function (line) {
+                return '<li>' + inlineRules(line.replace(/^[ \t]*\d+\. /, '')) + '</li>';
+            }).join('');
+            return '<ol class="um-md-ol">' + items + '</ol>\n';
+        });
+
+        md = md.replace(/\n{2,}/g, '\n\n');
+        md = md.split('\n\n').map(function (block) {
+            block = block.trim();
+            if (!block) return '';
+            if (/^<(h[1-6]|ul|ol|li|blockquote|pre|table|tbody|thead|tr|td|th|hr|div|img)/.test(block)) return block;
+            if (/^\x00CODE/.test(block)) return block;
+            return '<p class="um-md-p">' + inlineRules(block) + '</p>';
+        }).join('\n');
+
+        codeBlocks.forEach(function (html, i) {
+            md = md.replace(new RegExp('\x00CODE' + i + '\x00', 'g'), html);
+        });
+        codeSpans.forEach(function (html, i) {
+            md = md.replace(new RegExp('\x00SPAN' + i + '\x00', 'g'), html);
+        });
+
+        return md;
+    }
+
+    function _injectMarkdownStyles() {
+        if (document.getElementById('um-markdown-styles')) return;
+        const css = [
+            '.um-md-toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;}',
+            '.um-md-btn{background:#f4f4f4;border:1px solid #ddd;border-radius:6px;padding:6px 10px;',
+            'font-size:.8rem;cursor:pointer;color:#333;display:inline-flex;align-items:center;gap:6px;}',
+            '.um-md-btn:hover{background:#e9ecef;}',
+            '.um-md-btn[aria-pressed="true"]{background:var(--um-accent);border-color:var(--um-accent);color:var(--um-header-bg);}',
+            '.um-md-body{line-height:1.6;color:#222;word-wrap:break-word;}',
+            '.um-md-body h1,.um-md-body h2,.um-md-body h3,.um-md-body h4,.um-md-body h5,.um-md-body h6{margin:1.2em 0 .5em;font-weight:700;}',
+            '.um-md-body h1{font-size:1.6rem;} .um-md-body h2{font-size:1.35rem;} .um-md-body h3{font-size:1.15rem;}',
+            '.um-md-p{margin:0 0 1em;}',
+            '.um-md-ul,.um-md-ol{margin:0 0 1em;padding-left:1.4em;}',
+            '.um-md-task{list-style:none;margin-left:-1.4em;}',
+            '.um-md-blockquote{margin:0 0 1em;padding:.4em 1em;border-left:3px solid var(--um-accent);color:#555;background:#faf8f0;}',
+            '.um-md-code-block{background:#1e1e2e;color:#eee;padding:12px 14px;border-radius:8px;overflow-x:auto;margin:0 0 1em;font-size:.85rem;}',
+            '.um-md-code-inline{background:#f0f0f0;border-radius:4px;padding:.1em .35em;font-size:.88em;}',
+            '.um-md-table{border-collapse:collapse;width:100%;margin:0 0 1em;font-size:.9rem;}',
+            '.um-md-table th,.um-md-table td{border:1px solid #ddd;padding:6px 10px;}',
+            '.um-md-table th{background:#f4f4f4;}',
+            '.um-md-hr{border:none;border-top:1px solid #ddd;margin:1.5em 0;}',
+            '.um-md-img{max-width:100%;border-radius:6px;}',
+            '.um-md-link{color:#0d6efd;}',
+            '.um-md-raw{white-space:pre-wrap;font-family:monospace;font-size:.85rem;background:#f8f8f8;',
+            'padding:14px;border-radius:8px;margin:0;}'
+        ].join('');
+        const style = document.createElement('style');
+        style.id = 'um-markdown-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    registerContentType('markdown', function (props, bodyEl) {
+        _injectMarkdownStyles();
+
+        if (!props.url && !props.text) {
+            _showBodyError(bodyEl, 'Markdown viewer error: props.url or props.text is required.');
+            return;
+        }
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'um-md-toolbar';
+
+        const rawBtn = document.createElement('button');
+        rawBtn.type = 'button';
+        rawBtn.className = 'um-md-btn';
+        rawBtn.textContent = 'View raw';
+        rawBtn.setAttribute('aria-pressed', 'false');
+        rawBtn.setAttribute('aria-label', 'Toggle between rendered and raw Markdown');
+
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'um-md-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.setAttribute('aria-live', 'polite'); // announces Copy -> Copied/Failed -> Copy
+
+        toolbar.appendChild(rawBtn);
+        toolbar.appendChild(copyBtn);
+
+        const body = document.createElement('div');
+        body.className = 'um-md-body';
+        body.textContent = 'Loading\u2026';
+
+        bodyEl.appendChild(toolbar);
+        bodyEl.appendChild(body);
+
+        let rawText = props.text || '';
+        let isRaw = false;
+        let resetTimer = null;
+
+        function renderRendered() {
+            body.removeAttribute('role');
+            body.className = 'um-md-body';
+            body.innerHTML = _parseMarkdownToHtml(rawText); // built from escapeHtml()-passed pieces only
+        }
+        function renderRaw() {
+            body.removeAttribute('role');
+            body.className = 'um-md-raw';
+            body.textContent = rawText; // textContent — safe, no HTML involved
+        }
+
+        rawBtn.addEventListener('click', function () {
+            isRaw = !isRaw;
+            rawBtn.setAttribute('aria-pressed', String(isRaw));
+            rawBtn.textContent = isRaw ? 'View rendered' : 'View raw';
+            if (isRaw) renderRaw(); else renderRendered();
+        });
+
+        copyBtn.addEventListener('click', function () {
+            function showState(ok) {
+                if (resetTimer) clearTimeout(resetTimer);
+                copyBtn.textContent = ok ? '\u2713 Copied' : '\u2717 Failed';
+                resetTimer = setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(rawText).then(function () { showState(true); }, function () {
+                    if (!_execCommandCopyFallback(rawText)) showState(false); else showState(true);
+                });
+            } else {
+                showState(_execCommandCopyFallback(rawText));
+            }
+        });
+
+        function finishLoad(text) {
+            rawText = text;
+            renderRendered();
+        }
+
+        if (props.text) {
+            finishLoad(props.text);
+        } else {
+            fetch(props.url).then(function (res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            }).then(finishLoad).catch(function (err) {
+                body.className = 'um-md-body';
+                body.setAttribute('role', 'alert');
+                body.textContent = 'Could not load Markdown file: ' + err.message; // textContent — safe
+            });
+        }
+
+        return function cleanup() {
+            if (resetTimer) clearTimeout(resetTimer);
+        };
+    });
+
+    function _execCommandCopyFallback(text) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            return ok;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // BUILT-IN CONTENT TYPE: "gallery"
+    // Ported from sheet-nav17.js's _DocViewer._renderGallery() — prev/
+    // next nav, dot strip, click/wheel zoom, touch swipe, keyboard
+    // arrows, and next/prev image prefetching. Capped at 10 images.
+    //
+    //   UnifiedModal.open({
+    //     title: 'Photo Tour', size: 'lg',
+    //     content: { type: 'gallery', props: {
+    //       images: ['https://.../1.jpg', 'https://.../2.jpg'],
+    //       captions: ['Front entrance', 'Garden view']   // optional
+    //     } }
+    //   });
+    // ---------------------------------------------------------------
+    const GALLERY_MAX = 10;
+
+    function _injectGalleryStyles() {
+        if (document.getElementById('um-gallery-styles')) return;
+        const css = [
+            '.um-gallery-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:10px;}',
+            '.um-gallery-toolbar .um-gallery-counter{margin-left:auto;font-size:.85rem;color:#555;}',
+            '.um-gallery-zbtn{background:#f4f4f4;border:1px solid #ddd;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:.8rem;}',
+            '.um-gallery-zbtn:hover{background:#e9ecef;}',
+            '.um-gallery-area{position:relative;display:flex;align-items:center;justify-content:center;',
+            'min-height:280px;background:#111;border-radius:8px;overflow:hidden;}',
+            '.um-gallery-imgwrap{width:100%;height:60vh;max-height:520px;overflow:hidden;display:flex;',
+            'align-items:center;justify-content:center;cursor:zoom-in;touch-action:pan-y;}',
+            '.um-gallery-img{max-width:100%;max-height:100%;object-fit:contain;transition:transform .15s ease,opacity .18s ease;user-select:none;}',
+            '.um-gallery-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.45);',
+            'color:#fff;border:none;width:38px;height:38px;border-radius:50%;font-size:1.4rem;cursor:pointer;',
+            'display:flex;align-items:center;justify-content:center;z-index:2;}',
+            '.um-gallery-nav:hover{background:rgba(0,0,0,.7);}',
+            '.um-gallery-prev{left:10px;} .um-gallery-next{right:10px;}',
+            '.um-gallery-caption{text-align:center;color:#444;font-size:.9rem;margin-top:10px;}',
+            '.um-gallery-dots{display:flex;justify-content:center;gap:6px;margin-top:10px;}',
+            '.um-gallery-dot{width:8px;height:8px;border-radius:50%;background:#ccc;border:none;cursor:pointer;padding:0;}',
+            '.um-gallery-dot.active{background:var(--um-accent);}',
+            '.um-gallery-loading{color:#ccc;font-size:.85rem;}'
+        ].join('');
+        const style = document.createElement('style');
+        style.id = 'um-gallery-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    registerContentType('gallery', function (props, bodyEl) {
+        _injectGalleryStyles();
+
+        const captionsIn = Array.isArray(props.captions) ? props.captions : [];
+        let images = (Array.isArray(props.images) ? props.images : [])
+            .filter(function (u) { return typeof u === 'string' && u.trim(); })
+            .map(function (u) { return _sanitiseURL(u); })
+            .filter(Boolean);
+
+        if (images.length > GALLERY_MAX) {
+            images = images.slice(0, GALLERY_MAX);
+        }
+
+        if (images.length === 0) {
+            _showBodyError(bodyEl, 'Gallery error: no valid image URLs were provided.');
+            return;
+        }
+
+        let curIdx = 0, scale = 1;
+        const STEP = 0.25, MIN = 0.25, MAX = 5;
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'um-gallery-toolbar';
+        function zbtn(label, aria) {
+            const b = document.createElement('button');
+            b.className = 'um-gallery-zbtn';
+            b.textContent = label;
+            b.setAttribute('aria-label', aria);
+            return b;
+        }
+        const zoomInBtn = zbtn('+', 'Zoom in');
+        const zoomOutBtn = zbtn('\u2212', 'Zoom out');
+        const resetBtn = zbtn('Reset', 'Reset zoom');
+        const counter = document.createElement('span');
+        counter.className = 'um-gallery-counter';
+        counter.setAttribute('aria-live', 'polite');
+        toolbar.appendChild(zoomInBtn);
+        toolbar.appendChild(zoomOutBtn);
+        toolbar.appendChild(resetBtn);
+        toolbar.appendChild(counter);
+
+        const area = document.createElement('div');
+        area.className = 'um-gallery-area';
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'um-gallery-nav um-gallery-prev';
+        prevBtn.setAttribute('aria-label', 'Previous image');
+        prevBtn.textContent = '\u2039';
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'um-gallery-nav um-gallery-next';
+        nextBtn.setAttribute('aria-label', 'Next image');
+        nextBtn.textContent = '\u203a';
+        const imgWrap = document.createElement('div');
+        imgWrap.className = 'um-gallery-imgwrap';
+        const loadEl = document.createElement('div');
+        loadEl.className = 'um-gallery-loading';
+        loadEl.textContent = 'Loading image\u2026';
+        const img = document.createElement('img');
+        img.className = 'um-gallery-img';
+        img.alt = '';
+        img.decoding = 'async';
+        imgWrap.appendChild(loadEl);
+        imgWrap.appendChild(img);
+        area.appendChild(prevBtn);
+        area.appendChild(imgWrap);
+        area.appendChild(nextBtn);
+
+        const captionEl = document.createElement('div');
+        captionEl.className = 'um-gallery-caption';
+
+        const dots = document.createElement('div');
+        dots.className = 'um-gallery-dots';
+        if (images.length > 1) {
+            images.forEach(function (_, i) {
+                const dot = document.createElement('button');
+                dot.className = 'um-gallery-dot' + (i === 0 ? ' active' : '');
+                dot.setAttribute('aria-label', 'Go to image ' + (i + 1));
+                dot.addEventListener('click', function () { goTo(i); });
+                dots.appendChild(dot);
+            });
+        }
+
+        bodyEl.appendChild(toolbar);
+        bodyEl.appendChild(area);
+        bodyEl.appendChild(captionEl);
+        bodyEl.appendChild(dots);
+
+        function applyTransform() { img.style.transform = 'scale(' + scale + ')'; }
+
+        function goTo(idx) {
+            curIdx = (idx + images.length) % images.length;
+            scale = 1;
+            img.style.transformOrigin = '50% 50%';
+            applyTransform();
+            img.style.opacity = '0';
+            img.src = images[curIdx];
+            img.alt = captionsIn[curIdx] || ('Image ' + (curIdx + 1));
+            counter.textContent = (curIdx + 1) + ' / ' + images.length;
+            captionEl.textContent = captionsIn[curIdx] || '';
+            captionEl.style.display = captionsIn[curIdx] ? '' : 'none';
+            dots.querySelectorAll('.um-gallery-dot').forEach(function (d, i) {
+                d.classList.toggle('active', i === curIdx);
+            });
+            prevBtn.style.visibility = images.length > 1 ? '' : 'hidden';
+            nextBtn.style.visibility = images.length > 1 ? '' : 'hidden';
+            if (images.length > 1) {
+                [(curIdx + 1) % images.length, (curIdx - 1 + images.length) % images.length].forEach(function (i) {
+                    const p = new Image();
+                    p.src = images[i];
+                });
+            }
+        }
+
+        img.addEventListener('load', function () {
+            if (loadEl.parentNode) loadEl.parentNode.removeChild(loadEl);
+            img.style.opacity = '1';
+        });
+        img.addEventListener('error', function () {
+            img.style.opacity = '1';
+            img.alt = 'Could not load image ' + (curIdx + 1) + '.';
+        });
+
+        prevBtn.addEventListener('click', function () { goTo(curIdx - 1); });
+        nextBtn.addEventListener('click', function () { goTo(curIdx + 1); });
+
+        img.addEventListener('click', function (e) {
+            const r = imgWrap.getBoundingClientRect();
+            img.style.transformOrigin = ((e.clientX - r.left) / r.width * 100) + '% ' + ((e.clientY - r.top) / r.height * 100) + '%';
+            scale = scale < MAX ? Math.min(MAX, parseFloat((scale + STEP).toFixed(2))) : 1;
+            applyTransform();
+        });
+
+        imgWrap.addEventListener('wheel', function (e) {
+            e.preventDefault();
+            const r = imgWrap.getBoundingClientRect();
+            img.style.transformOrigin = ((e.clientX - r.left) / r.width * 100) + '% ' + ((e.clientY - r.top) / r.height * 100) + '%';
+            const delta = e.deltaY < 0 ? STEP : -STEP;
+            scale = Math.min(MAX, Math.max(MIN, parseFloat((scale + delta).toFixed(2))));
+            applyTransform();
+        }, { passive: false });
+
+        let touchStartX = 0;
+        imgWrap.addEventListener('touchstart', function (e) { touchStartX = e.touches[0].clientX; }, { passive: true });
+        imgWrap.addEventListener('touchend', function (e) {
+            const delta = e.changedTouches[0].clientX - touchStartX;
+            if (Math.abs(delta) > 40) goTo(delta < 0 ? curIdx + 1 : curIdx - 1);
+        }, { passive: true });
+
+        zoomInBtn.addEventListener('click', function () {
+            img.style.transformOrigin = '50% 50%';
+            scale = Math.min(MAX, parseFloat((scale + STEP).toFixed(2)));
+            applyTransform();
+        });
+        zoomOutBtn.addEventListener('click', function () {
+            img.style.transformOrigin = '50% 50%';
+            scale = Math.max(MIN, parseFloat((scale - STEP).toFixed(2)));
+            applyTransform();
+        });
+        resetBtn.addEventListener('click', function () {
+            scale = 1;
+            img.style.transformOrigin = '50% 50%';
+            applyTransform();
+        });
+
+        function keyHandler(e) {
+            if (e.key === 'ArrowLeft') goTo(curIdx - 1);
+            else if (e.key === 'ArrowRight') goTo(curIdx + 1);
+        }
+        document.addEventListener('keydown', keyHandler);
+
+        goTo(0);
+
+        return function cleanup() {
+            document.removeEventListener('keydown', keyHandler);
+        };
+    });
+
+    // ---------------------------------------------------------------
+    // BUILT-IN CONTENT TYPE: "iconGrid"
+    // Ported from IconGridModal.js — renders a grid of icon buttons
+    // from a caller-supplied `items` list (the same {key,label,icon,
+    // color,kind} shape used by socialIcons.js / contactIcons.js), so
+    // those data files can be used directly in this engine's shared
+    // shell instead of IconGridModal's own separate overlay.
+    //
+    //   content: { type: 'iconGrid', props: {
+    //     items: SOCIAL_ICONS,           // or CONTACT_ICONS, or custom
+    //     links: { facebook: 'https://facebook.com/yourpage', ... },
+    //     columns: 4                     // optional, default 4
+    //   } }
+    //
+    // Only items whose `key` has a truthy entry in `links` are
+    // rendered. `kind: 'copy'` items (see contactIcons.js — phone/sms)
+    // render a tap-to-copy button instead of a link, reusing the same
+    // clipboard-copy helper as the markdown content type. All other
+    // items render as <a href> links, protocol-checked through the
+    // same _sanitiseURL() allowlist the "doc"/"gallery" types use.
+    // `icon` is trusted HTML (Font Awesome tag or inline SVG) per the
+    // data files' documented contract — never end-user input.
+    // ---------------------------------------------------------------
+    function _injectIconGridStyles() {
+        if (document.getElementById('um-icongrid-styles')) return;
+        const css = [
+            '.um-icongrid{display:grid;grid-template-columns:repeat(var(--um-ig-cols,4),minmax(0,1fr));',
+            'gap:16px;width:100%;}',
+            '@media (max-width:400px){.um-icongrid{grid-template-columns:repeat(auto-fit,minmax(64px,1fr));}}',
+            '.um-icongrid-item{display:flex;flex-direction:column;align-items:center;gap:8px;',
+            'background:none;border:none;padding:0;cursor:pointer;font:inherit;color:inherit;text-decoration:none;}',
+            '.um-icongrid-circle{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;',
+            'justify-content:center;font-size:1.35rem;border:1.5px solid var(--um-ig-color,#666);',
+            'color:var(--um-ig-color,#666);background:#fff;transition:background .15s ease,color .15s ease;}',
+            '.um-icongrid-item:hover .um-icongrid-circle,.um-icongrid-item:focus-visible .um-icongrid-circle{',
+            'background:var(--um-ig-color,#666);color:#fff;}',
+            '.um-icongrid-item:focus-visible{outline:2px solid var(--um-ig-color,#666);outline-offset:3px;border-radius:8px;}',
+            '.um-icongrid-label{font-size:.78rem;text-align:center;color:#444;line-height:1.25;',
+            'transition:color .15s ease;}',
+            '.um-icongrid-item:hover .um-icongrid-label,.um-icongrid-item:focus-visible .um-icongrid-label{',
+            'color:var(--um-ig-color,#666);}',
+            '.um-icongrid-item.um-icongrid-copied .um-icongrid-circle{background:#28a745;border-color:#28a745;color:#fff;}',
+            '@media (prefers-reduced-motion:reduce){.um-icongrid-circle,.um-icongrid-label{transition:none !important;}}'
+        ].join('');
+        const style = document.createElement('style');
+        style.id = 'um-icongrid-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    registerContentType('iconGrid', function (props, bodyEl) {
+        _injectIconGridStyles();
+
+        const items = Array.isArray(props.items) ? props.items : [];
+        const links = props.links || {};
+
+        if (items.length === 0) {
+            _showBodyError(bodyEl, 'Icon grid error: props.items is required (e.g. SOCIAL_ICONS or CONTACT_ICONS).');
+            return;
+        }
+
+        const visible = items.filter(function (item) {
+            return item && item.key && links[item.key];
+        });
+
+        if (visible.length === 0) {
+            _showBodyError(bodyEl, 'Icon grid error: none of the provided links matched an item key.');
+            return;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'um-icongrid';
+        grid.style.setProperty('--um-ig-cols', String(props.columns || 4));
+
+        visible.forEach(function (item) {
+            const value = links[item.key];
+            const isCopy = item.kind === 'copy';
+            const displayLabel = item.label || item.key;
+
+            const el = document.createElement(isCopy ? 'button' : 'a');
+            el.className = 'um-icongrid-item';
+            el.style.setProperty('--um-ig-color', item.color || '#666');
+            if (isCopy) {
+                el.type = 'button';
+            } else {
+                const safeUrl = _sanitiseURL(value);
+                if (!safeUrl) return;
+                el.href = safeUrl;
+                el.target = '_blank';
+                el.rel = 'noopener noreferrer';
+            }
+
+            const circle = document.createElement('span');
+            circle.className = 'um-icongrid-circle';
+            circle.setAttribute('aria-hidden', 'true');
+            circle.innerHTML = item.icon || ''; // trusted HTML per items contract — never end-user input
+
+            const label = document.createElement('span');
+            label.className = 'um-icongrid-label';
+            label.textContent = displayLabel;
+            if (isCopy) label.setAttribute('aria-live', 'polite'); // announces Copied!/Copy failed
+
+            el.appendChild(circle);
+            el.appendChild(label);
+            el.setAttribute('aria-label', isCopy ? ('Copy ' + displayLabel) : displayLabel);
+
+            if (isCopy) {
+                let resetTimer = null;
+                el.addEventListener('click', function () {
+                    function showState(ok) {
+                        if (resetTimer) clearTimeout(resetTimer);
+                        el.classList.toggle('um-icongrid-copied', ok);
+                        label.textContent = ok ? 'Copied!' : 'Copy failed';
+                        el.setAttribute('aria-label', ok ? ('Copied ' + displayLabel) : ('Failed to copy ' + displayLabel));
+                        resetTimer = setTimeout(function () {
+                            el.classList.remove('um-icongrid-copied');
+                            label.textContent = displayLabel;
+                            el.setAttribute('aria-label', 'Copy ' + displayLabel);
+                        }, 1500);
+                    }
+                    const rawText = String(value);
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(rawText).then(function () { showState(true); }, function () {
+                            showState(_execCommandCopyFallback(rawText));
+                        });
+                    } else {
+                        showState(_execCommandCopyFallback(rawText));
+                    }
+                });
+            }
+
+            grid.appendChild(el);
+        });
+
+        bodyEl.appendChild(grid);
+    });
+
+    // ---------------------------------------------------------------
+    // TOAST / NOTIFICATION QUEUE
+    // Lightweight, non-modal notices. Unlike open()/confirm()/alert(),
+    // toasts have no overlay/backdrop, don't block interaction, don't
+    // trap focus, and aren't part of the modal `_stack` (Escape closes
+    // modals, not toasts). Multiple toasts can queue/stack at once in
+    // any corner; each auto-dismisses on its own timer unless
+    // `duration: 0` is passed for a sticky notice.
+    // ---------------------------------------------------------------
+    const _toastStack = [];       // active toast controllers, oldest first
+    const _toastContainers = {};  // one stacking container per position
+
+    const TOAST_ACCENT = {
+        info:    '#1a2744',
+        success: '#28a745',
+        warning: '#e6a700',
+        error:   '#dc3545'
+    };
+
+    // Type is communicated by icon + text, not by border color alone
+    // (WCAG 1.4.1 — use of color).
+    const TOAST_ICON = {
+        info:    '\u2139',   // ℹ
+        success: '\u2713',   // ✓
+        warning: '\u26A0',   // ⚠
+        error:   '\u2715'    // ✕
+    };
+
+    const TOAST_POSITIONS = ['top-right', 'top-left', 'top-center', 'bottom-right', 'bottom-left'];
+
+    function _injectToastStyles() {
+        if (document.getElementById('um-toast-styles')) return;
+
+        const css = [
+            '.um-toast-container{position:fixed;z-index:100000;display:flex;flex-direction:column;',
+            'gap:10px;pointer-events:none;}',
+            '.um-toast-container[data-position="top-right"]{top:20px;right:20px;align-items:flex-end;}',
+            '.um-toast-container[data-position="top-left"]{top:20px;left:20px;align-items:flex-start;}',
+            '.um-toast-container[data-position="top-center"]{top:20px;left:50%;',
+            'transform:translateX(-50%);align-items:center;}',
+            '.um-toast-container[data-position="bottom-right"]{bottom:20px;right:20px;',
+            'align-items:flex-end;flex-direction:column-reverse;}',
+            '.um-toast-container[data-position="bottom-left"]{bottom:20px;left:20px;',
+            'align-items:flex-start;flex-direction:column-reverse;}',
+
+            '.um-toast{pointer-events:auto;position:relative;overflow:hidden;background:#fff;',
+            'display:flex;align-items:flex-start;gap:10px;',
+            'border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);',
+            'border-left:4px solid var(--um-toast-accent,#1a2744);padding:12px 34px 12px 14px;',
+            'width:320px;max-width:calc(100vw - 40px);box-sizing:border-box;font-family:var(--um-font);',
+            'opacity:0;transform:translateY(-8px);transition:opacity .2s ease,transform .2s ease;}',
+            '.um-toast.um-toast-in{opacity:1;transform:translateY(0);}',
+            '.um-toast.um-toast-out{opacity:0;transform:translateY(-8px);}',
+
+            '.um-toast-icon{flex-shrink:0;font-size:1rem;line-height:1.4;',
+            'color:var(--um-toast-accent,#1a2744);}',
+            '.um-toast-content{flex:1;min-width:0;}',
+            '.um-toast-title{margin:0 0 2px 0;font-size:.9rem;font-weight:700;color:#212529;}',
+            '.um-toast-message{margin:0;font-size:.85rem;line-height:1.4;color:#495057;',
+            'word-wrap:break-word;}',
+            '.um-toast-close{position:absolute;top:8px;right:8px;background:none;border:none;',
+            'cursor:pointer;color:#adb5bd;font-size:16px;line-height:1;padding:4px;}',
+            '.um-toast-close:hover{color:#495057;}',
+            '.um-toast-close:focus-visible{outline:2px solid var(--um-toast-accent,#1a2744);outline-offset:2px;}',
+
+            '.um-toast-progress{position:absolute;left:0;bottom:0;height:3px;width:100%;',
+            'background:var(--um-toast-accent,#1a2744);opacity:.35;transform-origin:left;',
+            'animation-name:um-toast-shrink;animation-timing-function:linear;animation-fill-mode:forwards;}',
+            '@keyframes um-toast-shrink{from{transform:scaleX(1);}to{transform:scaleX(0);}}',
+
+            '@media (prefers-color-scheme:dark){',
+            '.um-toast{background:#22232b;}',
+            '.um-toast-title{color:#f1f1f3;}',
+            '.um-toast-message{color:#c7c9d1;}',
+            '.um-toast-close{color:#7e8190;}',
+            '}',
+
+            '@media (prefers-reduced-motion:reduce){.um-toast{transition:none !important;}',
+            '.um-toast-progress{animation:none !important;}}'
+        ].join('');
+
+        const style = document.createElement('style');
+        style.id = 'um-toast-styles';
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    function _getToastContainer(position) {
+        _injectToastStyles();
+        if (_toastContainers[position]) return _toastContainers[position];
+
+        const el = document.createElement('div');
+        el.className = 'um-toast-container';
+        el.setAttribute('data-position', position);
+        document.body.appendChild(el);
+        _toastContainers[position] = el;
+        return el;
+    }
+
+    function notify(options) {
+        options = options || {};
+        const settings = Object.assign({
+            type: 'info',            // info | success | warning | error
+            title: null,
+            message: '',
+            duration: 4000,          // ms; 0 = sticky, no auto-dismiss
+            position: 'top-right',
+            dismissible: true,
+            onClose: null
+        }, options);
+
+        if (TOAST_POSITIONS.indexOf(settings.position) === -1) settings.position = 'top-right';
+
+        const container = _getToastContainer(settings.position);
+
+        const toast = document.createElement('div');
+        toast.className = 'um-toast';
+        toast.setAttribute('role', settings.type === 'error' ? 'alert' : 'status');
+        toast.setAttribute('aria-live', settings.type === 'error' ? 'assertive' : 'polite');
+        toast.setAttribute('aria-atomic', 'true'); // announce the full message, not just diffs
+        toast.style.setProperty('--um-toast-accent', TOAST_ACCENT[settings.type] || TOAST_ACCENT.info);
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'um-toast-icon';
+        iconEl.setAttribute('aria-hidden', 'true'); // decorative; type is already conveyed by role/aria-live + text
+        iconEl.textContent = TOAST_ICON[settings.type] || TOAST_ICON.info;
+        toast.appendChild(iconEl);
+
+        const content = document.createElement('div');
+        content.className = 'um-toast-content';
+
+        if (settings.title) {
+            const titleEl = document.createElement('p');
+            titleEl.className = 'um-toast-title';
+            titleEl.textContent = settings.title; // textContent — safe
+            content.appendChild(titleEl);
+        }
+
+        const msgEl = document.createElement('p');
+        msgEl.className = 'um-toast-message';
+        msgEl.textContent = settings.message; // textContent — safe
+        content.appendChild(msgEl);
+
+        toast.appendChild(content);
+
+        let timer = null;
+        let removed = false;
+
+        function remove(immediate) {
+            if (removed) return;
+            removed = true;
+            if (timer) clearTimeout(timer);
+
+            toast.classList.remove('um-toast-in');
+            toast.classList.add('um-toast-out');
+
+            let finished = false;
+            const finish = function () {
+                if (finished) return;
+                finished = true;
+                if (toast.parentNode) toast.parentNode.removeChild(toast);
+                const idx = _toastStack.indexOf(controller);
+                if (idx !== -1) _toastStack.splice(idx, 1);
+                if (container.children.length === 0 && container.parentNode) {
+                    container.parentNode.removeChild(container);
+                    delete _toastContainers[settings.position];
+                }
+                if (typeof settings.onClose === 'function') settings.onClose();
+            };
+
+            if (_reducedMotion() || immediate) {
+                finish();
+            } else {
+                // transitionend is the primary trigger, but some
+                // environments (headless contexts, interrupted
+                // transitions, etc.) never fire it — a fallback timer
+                // guarantees the toast is still cleaned up.
+                toast.addEventListener('transitionend', finish, { once: true });
+                setTimeout(finish, 260);
+            }
+        }
+
+        if (settings.dismissible) {
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'um-toast-close';
+            closeBtn.setAttribute('aria-label', 'Dismiss notification');
+            closeBtn.innerHTML = '&times;';
+            closeBtn.addEventListener('click', function () { remove(); });
+            toast.appendChild(closeBtn);
+        }
+
+        if (settings.duration > 0) {
+            const progress = document.createElement('div');
+            progress.className = 'um-toast-progress';
+            if (!_reducedMotion()) {
+                progress.style.animationDuration = settings.duration + 'ms';
+            }
+            toast.appendChild(progress);
+            timer = setTimeout(remove, settings.duration);
+        }
+
+        // Newest toast is appended; for top-* positions that stacks new
+        // ones below existing ones, for bottom-* the container's
+        // flex-direction:column-reverse makes the newest sit nearest
+        // the screen edge with older ones queued above it.
+        container.appendChild(toast);
+
+        requestAnimationFrame(function () {
+            toast.classList.add('um-toast-in');
+        });
+
+        const controller = { el: toast, close: remove };
+        _toastStack.push(controller);
+        return controller;
+    }
+
+    notify.info = function (message, opts) {
+        return notify(Object.assign({ type: 'info' }, opts, { message: message }));
+    };
+    notify.success = function (message, opts) {
+        return notify(Object.assign({ type: 'success' }, opts, { message: message }));
+    };
+    notify.warning = function (message, opts) {
+        return notify(Object.assign({ type: 'warning' }, opts, { message: message }));
+    };
+    notify.error = function (message, opts) {
+        return notify(Object.assign({ type: 'error' }, opts, { message: message }));
+    };
+
+    function closeAllNotifications() {
+        _toastStack.slice().forEach(function (c) { c.close(); });
+    }
+
+    // ---------------------------------------------------------------
+    // DESTROY — full engine teardown. Ported/expanded from
+    // SocialMediaModal.js's destroy(), but scoped to everything the
+    // engine has ever created rather than one fixed modal: every open
+    // modal, every toast/toast container, and every stylesheet this
+    // file has injected.
+    //
+    // Unlike close()/closeAll(), this does not wait on transitionend —
+    // close(true)/remove(true) run their teardown (DOM removal, stack
+    // cleanup, scroll-lock/AT restore, onClose callbacks) synchronously
+    // instead, since the point of destroy() is a clean slate right now
+    // (e.g. before unmounting in an SPA), not a graceful animated exit,
+    // and firing onClose late (after destroy() has already returned)
+    // would be surprising. Registered content types are left intact so
+    // the engine can be used again immediately after destroy().
+    // ---------------------------------------------------------------
+    function destroy() {
+        _stack.slice().forEach(function (c) { c.close(true); });
+        _stack.length = 0;
+
+        // close(true) above already unwinds scroll-lock/AT state per
+        // modal, but force a clean baseline regardless.
+        _scrollLockCount = 0;
+        document.body.style.overflow = _savedBodyOverflow;
+        _restoreBackgroundFromAT();
+
+        _toastStack.slice().forEach(function (c) { c.close(true); });
+        _toastStack.length = 0;
+
+        Object.keys(_toastContainers).forEach(function (pos) {
+            const el = _toastContainers[pos];
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+            delete _toastContainers[pos];
+        });
+
+        [
+            'um-shell-styles', 'um-btn-styles', 'um-toast-styles',
+            'um-markdown-styles', 'um-gallery-styles', 'um-powered-styles',
+            'um-icongrid-styles', 'um-doc-styles'
+        ].forEach(function (id) {
+            const el = document.getElementById(id);
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+        });
+    }
+
+    return {
+        VERSION: '2.7.7',
+        open: open,
+        closeTop: closeTop,
+        closeAll: closeAll,
+        confirm: confirm,
+        alert: alertDialog,
+        notify: notify,
+        closeAllNotifications: closeAllNotifications,
+        destroy: destroy,
+        escapeHtml: escapeHtml,
+        registerContentType: registerContentType,
+        hasContentType: hasContentType,
+        listContentTypes: listContentTypes,
+        poweredByBadge: poweredByBadge,
+        SIZE_PRESETS: SIZE_PRESETS,
+        BRAND_THEME: Object.assign({}, BRAND_THEME)
+    };
+}));
