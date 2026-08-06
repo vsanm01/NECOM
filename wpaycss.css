@@ -1,4 +1,4 @@
-  :root {
+:root {
     --navy: #1a2744;
     --navy-deep: var(--navy);       /* FIX: was a duplicate hex literal — single source of truth now */
     --yellow: #ffd400;
@@ -471,16 +471,40 @@
     white-space: nowrap;
   }
 
-  .footer-subtagline {
-    display: inline-block;
-    background: var(--gold);
-    color: var(--navy-deep);
-    font-weight: 600;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    line-height: 1.6;
+  /* DMCA Protected badge — sits inside .footer-tagline-block, below .footer-tagline.
+     Replaces the old .footer-subtagline (used for "Our contribution makes a
+     difference", removed from the footer markup in v1.5.8). Deliberately does NOT
+     redeclare .footer-tagline-block itself — that rule already provides the flex
+     column + right-alignment (grid-column: 5, justify-self: end, align-items: flex-end)
+     this badge needs; a second .footer-tagline-block rule would win the cascade on
+     shared properties and silently re-center/re-space it. */
+  .ft-dmca {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
     white-space: nowrap;
+  }
+
+  .ft-dmca-label {
+    background: var(--yellow);
+    color: var(--navy-deep);
+    padding: 1px 6px;
+    border-radius: 4px 0 0 4px;
+  }
+
+  .ft-dmca-text {
+    background: var(--navy-deep);
+    color: var(--muted);
+    padding: 1px 6px 1px 4px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  .ft-dmca:hover .ft-dmca-label,
+  .ft-dmca:focus-visible .ft-dmca-label {
+    background: #ffb700;
   }
 
   @media (max-width: 560px) {
@@ -708,40 +732,3 @@
     .hamburger-btn { display: flex; }
     .mobile-donate-btn { display: inline-block; }
   }
-
-/* DMCA Protected badge — footer, under .footer-tagline in .footer-tagline-block */
-.footer-tagline-block {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.ft-dmca {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
-.ft-dmca-label {
-  background: var(--yellow);
-  color: var(--navy-deep);
-  padding: 1px 6px;
-  border-radius: 4px 0 0 4px;
-}
-
-.ft-dmca-text {
-  background: var(--navy-deep);
-  color: var(--muted);
-  padding: 1px 6px 1px 4px;
-  border-radius: 0 4px 4px 0;
-}
-
-.ft-dmca:hover .ft-dmca-label,
-.ft-dmca:focus-visible .ft-dmca-label {
-  background: #ffb700;
-}
